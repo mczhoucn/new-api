@@ -253,6 +253,37 @@ const renderResponseTime = (responseTime, t) => {
   }
 };
 
+const renderConcurrency = (record, t) => {
+  const current = Number(record?.current_concurrency || 0);
+  const limit = Number(record?.concurrency_limit || 10);
+  const isFull = limit > 0 && current >= limit;
+  const tagStyle =
+    current > 0
+      ? isFull
+        ? {
+            backgroundColor: '#fff1f0',
+            borderColor: '#ffccc7',
+            color: '#cf1322',
+          }
+        : {
+            backgroundColor: '#fffbe6',
+            borderColor: '#ffe58f',
+            color: '#ad6800',
+          }
+      : undefined;
+  return (
+    <Tooltip content={t('当前使用数/配置上限')}>
+      <Tag
+        color={current > 0 ? undefined : isFull ? 'red' : 'blue'}
+        shape='circle'
+        style={tagStyle}
+      >
+        {current}/{limit}
+      </Tag>
+    </Tooltip>
+  );
+};
+
 const isRequestPassThroughEnabled = (record) => {
   if (!record || record.children !== undefined) {
     return false;
@@ -521,6 +552,12 @@ export const getChannelsColumns = ({
       title: t('响应时间'),
       dataIndex: 'response_time',
       render: (text, record, index) => <div>{renderResponseTime(text, t)}</div>,
+    },
+    {
+      key: COLUMN_KEYS.CONCURRENCY,
+      title: t('并发'),
+      dataIndex: 'current_concurrency',
+      render: (text, record, index) => renderConcurrency(record, t),
     },
     {
       key: COLUMN_KEYS.BALANCE,

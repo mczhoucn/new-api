@@ -186,6 +186,7 @@ const EditChannelModal = (props) => {
     groups: ['default'],
     priority: 0,
     weight: 0,
+    concurrency_limit: 10,
     tag: '',
     multi_key_mode: 'random',
     // 渠道额外设置的默认值
@@ -974,6 +975,10 @@ const EditChannelModal = (props) => {
         data.base_url = 'https://ark.cn-beijing.volces.com';
       }
 
+      if (!data.concurrency_limit || data.concurrency_limit <= 0) {
+        data.concurrency_limit = 10;
+      }
+
       initialBaseUrlRef.current = data.base_url || '';
       setInputs(data);
       if (formApiRef.current) {
@@ -1031,6 +1036,7 @@ const EditChannelModal = (props) => {
         (data.remark && data.remark.trim()) ||
         (data.priority && data.priority !== 0) ||
         (data.weight && data.weight !== 0) ||
+        (data.concurrency_limit && data.concurrency_limit !== 10) ||
         (data.proxy && data.proxy.trim()) ||
         (data.system_prompt && data.system_prompt.trim()) ||
         data.thinking_to_content ||
@@ -1657,6 +1663,14 @@ const EditChannelModal = (props) => {
     }
     if (!Array.isArray(localInputs.models) || localInputs.models.length === 0) {
       showInfo(t('请至少选择一个模型！'));
+      return;
+    }
+    localInputs.concurrency_limit = Number(localInputs.concurrency_limit || 10);
+    if (
+      !Number.isInteger(localInputs.concurrency_limit) ||
+      localInputs.concurrency_limit <= 0
+    ) {
+      showInfo(t('并发连接数必须是正整数！'));
       return;
     }
     if (
@@ -2463,7 +2477,7 @@ const EditChannelModal = (props) => {
                   />
 
                   <Row gutter={12}>
-                    <Col span={12}>
+                    <Col span={8}>
                       <Form.InputNumber
                         field='priority'
                         label={t('渠道优先级')}
@@ -2473,13 +2487,25 @@ const EditChannelModal = (props) => {
                         style={{ width: '100%' }}
                       />
                     </Col>
-                    <Col span={12}>
+                    <Col span={8}>
                       <Form.InputNumber
                         field='weight'
                         label={t('渠道权重')}
                         placeholder={t('渠道权重')}
                         min={0}
                         onNumberChange={(value) => handleInputChange('weight', value)}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Form.InputNumber
+                        field='concurrency_limit'
+                        label={t('并发连接数')}
+                        placeholder={t('并发连接数')}
+                        min={1}
+                        onNumberChange={(value) =>
+                          handleInputChange('concurrency_limit', value)
+                        }
                         style={{ width: '100%' }}
                       />
                     </Col>

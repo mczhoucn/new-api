@@ -204,6 +204,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			} else {
 				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
+			service.ReleaseChannelConcurrencyLease(c)
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
@@ -221,8 +222,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			service.ReleaseChannelConcurrencyLease(c)
 			return
 		}
+		service.ReleaseChannelConcurrencyLease(c)
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
@@ -290,19 +293,28 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		if !autoBan {
 			autoBanInt = 0
 		}
-		return &model.Channel{
+		channel := &model.Channel{
 			Id:      c.GetInt("channel_id"),
 			Type:    c.GetInt("channel_type"),
 			Name:    c.GetString("channel_name"),
 			AutoBan: &autoBanInt,
-		}, nil
+		}
+		if !service.HasChannelConcurrencyLease(c, channel.Id) {
+			if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+				return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeChannelConcurrencyLimitExceeded, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			}
+		}
+		return channel, nil
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 
 	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 
 	if err != nil {
-		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		if model.IsChannelConcurrencyFullError(err) {
+			return nil, types.NewErrorWithStatusCode(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeChannelConcurrencyLimitExceeded, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
+		return nil, types.NewErrorWithStatusCode(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
@@ -310,6 +322,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
 	if newAPIError != nil {
+		service.ReleaseChannelConcurrencyLease(c)
 		return nil, newAPIError
 	}
 	return channel, nil
@@ -512,8 +525,13 @@ func RelayTask(c *gin.Context) {
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
+			if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+				taskErr = service.TaskErrorWrapperLocal(err, string(types.ErrorCodeChannelConcurrencyLimitExceeded), http.StatusTooManyRequests)
+				break
+			}
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+					service.ReleaseChannelConcurrencyLease(c)
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
 					break
 				}
@@ -523,7 +541,15 @@ func RelayTask(c *gin.Context) {
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
 				logger.LogError(c, channelErr.Error())
-				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
+				statusCode := channelErr.StatusCode
+				if statusCode == 0 {
+					statusCode = http.StatusInternalServerError
+				}
+				errorCode := string(channelErr.GetErrorCode())
+				if errorCode == "" {
+					errorCode = string(types.ErrorCodeGetChannelFailed)
+				}
+				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, errorCode, statusCode)
 				break
 			}
 		}
@@ -536,11 +562,13 @@ func RelayTask(c *gin.Context) {
 			} else {
 				taskErr = service.TaskErrorWrapperLocal(bodyErr, "read_request_body_failed", http.StatusBadRequest)
 			}
+			service.ReleaseChannelConcurrencyLease(c)
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
+		service.ReleaseChannelConcurrencyLease(c)
 		if taskErr == nil {
 			break
 		}

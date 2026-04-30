@@ -58,8 +58,7 @@ func GetAllEnableAbilities() []Ability {
 	return abilities
 }
 
-func getPriority(group string, model string, retry int) (int, error) {
-
+func getPriorities(group string, model string) ([]int, error) {
 	var priorities []int
 	err := DB.Model(&Ability{}).
 		Select("DISTINCT(priority)").
@@ -69,9 +68,17 @@ func getPriority(group string, model string, retry int) (int, error) {
 
 	if err != nil {
 		// 处理错误
-		return 0, err
+		return nil, err
 	}
 
+	return priorities, nil
+}
+
+func getPriority(group string, model string, retry int) (int, error) {
+	priorities, err := getPriorities(group, model)
+	if err != nil {
+		return 0, err
+	}
 	if len(priorities) == 0 {
 		// 如果没有查询到优先级，则返回错误
 		return 0, errors.New("数据库一致性被破坏")
@@ -141,6 +148,69 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
+}
+
+func GetAvailableChannel(group string, model string, retry int) (*Channel, error) {
+	priorities, err := getPriorities(group, model)
+	if err != nil {
+		return nil, err
+	}
+	if len(priorities) == 0 {
+		return nil, errors.New("数据库一致性被破坏")
+	}
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+
+	var lastFullErr error
+	for priorityIndex := retry; priorityIndex < len(priorities); priorityIndex++ {
+		priority := priorities[priorityIndex]
+		var abilities []Ability
+		err = DB.Model(&Ability{}).
+			Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority).
+			Order("weight DESC").
+			Find(&abilities).Error
+		if err != nil {
+			return nil, err
+		}
+		if len(abilities) == 0 {
+			continue
+		}
+
+		channelIds := make([]int, 0, len(abilities))
+		for _, ability := range abilities {
+			channelIds = append(channelIds, ability.ChannelId)
+		}
+		var channels []Channel
+		if err = DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
+			return nil, err
+		}
+		channelMap := make(map[int]*Channel, len(channels))
+		for i := range channels {
+			channelMap[channels[i].Id] = &channels[i]
+		}
+
+		candidates := make([]*Channel, 0, len(abilities))
+		for _, ability := range abilities {
+			if channel, ok := channelMap[ability.ChannelId]; ok {
+				candidates = append(candidates, channel)
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("数据库一致性错误，渠道不存在，请联系管理员修复")
+		}
+		channel, pickErr := pickAvailableChannelByWeight(candidates)
+		if channel != nil {
+			return channel, nil
+		}
+		if pickErr != nil {
+			lastFullErr = pickErr
+		}
+	}
+	if lastFullErr != nil {
+		return nil, lastFullErr
+	}
+	return nil, nil
 }
 
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {

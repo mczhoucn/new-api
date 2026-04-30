@@ -42,6 +42,7 @@ type Channel struct {
 	StatusCodeMapping *string `json:"status_code_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority          *int64  `json:"priority" gorm:"bigint;default:0"`
 	AutoBan           *int    `json:"auto_ban" gorm:"default:1"`
+	ConcurrencyLimit  *int    `json:"concurrency_limit" gorm:"default:10"`
 	OtherInfo         string  `json:"other_info"`
 	Tag               *string `json:"tag" gorm:"index"`
 	Setting           *string `json:"setting" gorm:"type:text"` // 渠道额外设置
@@ -54,7 +55,8 @@ type Channel struct {
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
 	// cache info
-	Keys []string `json:"-" gorm:"-"`
+	Keys               []string `json:"-" gorm:"-"`
+	CurrentConcurrency int      `json:"current_concurrency" gorm:"-"`
 }
 
 type ChannelInfo struct {

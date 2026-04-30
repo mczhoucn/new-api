@@ -51,6 +51,10 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
+			if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+				abortWithOpenAiMessage(c, http.StatusTooManyRequests, err.Error(), types.ErrorCodeChannelConcurrencyLimitExceeded)
+				return
+			}
 		} else {
 			// Select a channel for the user
 			// check token model mapping
@@ -112,6 +116,9 @@ func Distribute() func(c *gin.Context) {
 							autoGroups := service.GetUserAutoGroup(userGroup)
 							for _, g := range autoGroups {
 								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+									if err := service.AcquireChannelConcurrencyLease(c, preferred); err != nil {
+										break
+									}
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
@@ -120,9 +127,11 @@ func Distribute() func(c *gin.Context) {
 								}
 							}
 						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
-							channel = preferred
-							selectGroup = usingGroup
-							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+							if err := service.AcquireChannelConcurrencyLease(c, preferred); err == nil {
+								channel = preferred
+								selectGroup = usingGroup
+								service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+							}
 						}
 					}
 				}
@@ -135,6 +144,12 @@ func Distribute() func(c *gin.Context) {
 						Retry:      common.GetPointer(0),
 					})
 					if err != nil {
+						statusCode := http.StatusServiceUnavailable
+						errorCode := types.ErrorCodeModelNotFound
+						if model.IsChannelConcurrencyFullError(err) {
+							statusCode = http.StatusTooManyRequests
+							errorCode = types.ErrorCodeChannelConcurrencyLimitExceeded
+						}
 						showGroup := usingGroup
 						if usingGroup == "auto" {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
@@ -145,7 +160,7 @@ func Distribute() func(c *gin.Context) {
 						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
 						//	message = "数据库一致性已被破坏，请联系管理员"
 						//}
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
+						abortWithOpenAiMessage(c, statusCode, message, errorCode)
 						return
 					}
 					if channel == nil {
@@ -156,7 +171,16 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if channel != nil {
+			if setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model); setupErr != nil {
+				service.ReleaseChannelConcurrencyLease(c)
+				abortWithOpenAiMessage(c, setupErr.StatusCode, setupErr.Error(), setupErr.GetErrorCode())
+				return
+			}
+			defer service.ReleaseChannelConcurrencyLease(c)
+		} else {
+			c.Set("original_model", modelRequest.Model)
+		}
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)

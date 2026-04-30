@@ -160,6 +160,22 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 	group, _ := model.GetUserGroup(1, false)
 	c.Set("group", group)
 
+	if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+		newAPIError := types.NewErrorWithStatusCode(
+			err,
+			types.ErrorCodeChannelConcurrencyLimitExceeded,
+			http.StatusTooManyRequests,
+			types.ErrOptionWithSkipRetry(),
+			types.ErrOptionWithNoRecordErrorLog(),
+		)
+		return testResult{
+			context:     c,
+			localErr:    newAPIError,
+			newAPIError: newAPIError,
+		}
+	}
+	defer service.ReleaseChannelConcurrencyLease(c)
+
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, testModel)
 	if newAPIError != nil {
 		return testResult{

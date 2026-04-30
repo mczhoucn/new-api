@@ -147,6 +147,7 @@ func GetAllChannels(c *gin.Context) {
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
 	}
+	model.AttachChannelsConcurrency(channelData)
 
 	countQuery := model.DB.Model(&model.Channel{})
 	if statusFilter == common.ChannelStatusEnabled {
@@ -345,6 +346,7 @@ func SearchChannels(c *gin.Context) {
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
 	}
+	model.AttachChannelsConcurrency(pagedData)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -371,6 +373,7 @@ func GetChannel(c *gin.Context) {
 	}
 	if channel != nil {
 		clearChannelInfo(channel)
+		model.AttachChannelConcurrency(channel)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -434,6 +437,17 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
+	if channel == nil {
+		return fmt.Errorf("channel cannot be empty")
+	}
+	if channel.ConcurrencyLimit != nil {
+		if *channel.ConcurrencyLimit <= 0 {
+			return fmt.Errorf("并发连接数必须是正整数")
+		}
+	} else if isAdd {
+		channel.ConcurrencyLimit = common.GetPointer(model.DefaultChannelConcurrencyLimit)
+	}
+
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
@@ -441,7 +455,7 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
 	if isAdd {
-		if channel == nil || channel.Key == "" {
+		if channel.Key == "" {
 			return fmt.Errorf("channel cannot be empty")
 		}
 
@@ -962,6 +976,7 @@ func UpdateChannel(c *gin.Context) {
 	service.ResetProxyClientCache()
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
+	model.AttachChannelConcurrency(&channel.Channel)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
