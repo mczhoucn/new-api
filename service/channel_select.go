@@ -117,6 +117,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	filters := GetChannelConstraints(param.Ctx).Filters
+	var lastErr error
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
@@ -147,12 +148,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(
-				autoGroup,
-				param.ModelName,
-				priorityRetry,
-				filters,
-			)
+			channel, err = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, filters)
+			if err != nil {
+				lastErr = err
+			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -198,6 +197,14 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		)
 		if err != nil {
 			return nil, param.TokenGroup, err
+		}
+	}
+	if channel == nil && lastErr != nil {
+		return nil, selectGroup, lastErr
+	}
+	if channel != nil {
+		if err := AcquireChannelConcurrencyLease(param.Ctx, channel); err != nil {
+			return nil, selectGroup, err
 		}
 	}
 	return channel, selectGroup, nil
@@ -350,6 +357,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		var err error
 		channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
 		if err != nil {
+			if model.IsChannelConcurrencyFullError(err) {
+				return nil, selectGroup, &ChannelSelectError{StatusCode: http.StatusTooManyRequests, Code: types.ErrorCodeChannelConcurrencyLimitExceeded, Message: err.Error()}
+			}
 			showGroup := usingGroup
 			if usingGroup == "auto" {
 				showGroup = fmt.Sprintf("auto(%s)", selectGroup)

@@ -57,6 +57,8 @@ export const channelSchema = z.object({
   status_code_mapping: z.string().nullish(),
   priority: z.number().nullish(),
   auto_ban: z.number().nullish(),
+  concurrency_limit: z.number().int().min(1).default(10),
+  current_concurrency: z.number().int().nonnegative().default(0),
   other_info: z.string().default(''),
   tag: z.string().nullish(),
   setting: z.string().nullish(),

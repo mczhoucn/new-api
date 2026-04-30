@@ -260,6 +260,7 @@ func GetAllChannels(c *gin.Context) {
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
 	}
+	model.AttachChannelsConcurrency(channelData)
 
 	countQuery := buildChannelListQuery(groupFilter, statusFilter, -1)
 	var results []struct {
@@ -467,6 +468,7 @@ func SearchChannels(c *gin.Context) {
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
 	}
+	model.AttachChannelsConcurrency(pagedData)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -493,6 +495,7 @@ func GetChannel(c *gin.Context) {
 	}
 	if channel != nil {
 		clearChannelInfo(channel)
+		model.AttachChannelConcurrency(channel)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -546,6 +549,13 @@ const maxTaskExtendPluginKeys = 32
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
 		return fmt.Errorf("channel cannot be empty")
+	}
+	if channel.ConcurrencyLimit != nil {
+		if *channel.ConcurrencyLimit <= 0 {
+			return fmt.Errorf("并发连接数必须是正整数")
+		}
+	} else if isAdd {
+		channel.ConcurrencyLimit = common.GetPointer(model.DefaultChannelConcurrencyLimit)
 	}
 
 	// 校验 channel settings
@@ -1317,6 +1327,7 @@ func UpdateChannel(c *gin.Context) {
 	recordManageAudit(c, "channel.update", updateAudit)
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
+	model.AttachChannelConcurrency(&channel.Channel)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

@@ -43,13 +43,14 @@ const (
 	ErrorCodeViolationFeeGrokCSAM   ErrorCode = "violation_fee.grok.csam"
 
 	// new api error
-	ErrorCodeCountTokenFailed   ErrorCode = "count_token_failed"
-	ErrorCodeModelPriceError    ErrorCode = "model_price_error"
-	ErrorCodeInvalidApiType     ErrorCode = "invalid_api_type"
-	ErrorCodeJsonMarshalFailed  ErrorCode = "json_marshal_failed"
-	ErrorCodeDoRequestFailed    ErrorCode = "do_request_failed"
-	ErrorCodeGetChannelFailed   ErrorCode = "get_channel_failed"
-	ErrorCodeGenRelayInfoFailed ErrorCode = "gen_relay_info_failed"
+	ErrorCodeCountTokenFailed                ErrorCode = "count_token_failed"
+	ErrorCodeModelPriceError                 ErrorCode = "model_price_error"
+	ErrorCodeInvalidApiType                  ErrorCode = "invalid_api_type"
+	ErrorCodeJsonMarshalFailed               ErrorCode = "json_marshal_failed"
+	ErrorCodeDoRequestFailed                 ErrorCode = "do_request_failed"
+	ErrorCodeGetChannelFailed                ErrorCode = "get_channel_failed"
+	ErrorCodeChannelConcurrencyLimitExceeded ErrorCode = "channel_concurrency_limit_exceeded"
+	ErrorCodeGenRelayInfoFailed              ErrorCode = "gen_relay_info_failed"
 
 	// channel error
 	ErrorCodeChannelNoAvailableKey        ErrorCode = "channel:no_available_key"
@@ -368,6 +369,13 @@ func IsChannelError(err *NewAPIError) bool {
 		return false
 	}
 	return strings.HasPrefix(string(err.errorCode), "channel:")
+}
+
+func IsChannelConcurrencyLimitExceeded(err *NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	return err.GetErrorCode() == ErrorCodeChannelConcurrencyLimitExceeded
 }
 
 func IsSkipRetryError(err *NewAPIError) bool {

@@ -2220,6 +2220,29 @@ export function ChannelMutateDrawer({
 
       <FormField
         control={form.control}
+        name='concurrency_limit'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{t('Concurrency Limit')}</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                min={1}
+                placeholder='10'
+                {...field}
+                onChange={(e) => field.onChange(Number(e.target.value))}
+              />
+            </FormControl>
+            <FormDescription>
+              {t('Maximum simultaneous requests for this channel.')}
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
         name='test_model'
         render={({ field }) => (
           <FormItem>

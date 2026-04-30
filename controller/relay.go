@@ -123,6 +123,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	defer service.ReleaseChannelConcurrencyLease(c)
 
 	defer func() {
 		recovered := recover()
@@ -160,6 +161,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		service.ReleaseChannelConcurrencyLease(c)
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -272,15 +274,24 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			Name:    c.GetString("channel_name"),
 			AutoBan: &autoBanInt,
 		}
+		if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+			return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeChannelConcurrencyLimitExceeded, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
 		return channel, nil
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
+		if model.IsChannelConcurrencyFullError(err) {
+			return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeChannelConcurrencyLimitExceeded, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeChannelConcurrencyLimitExceeded, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 	}
 
 	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
@@ -288,6 +299,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	service.RequestPolicy(c).BeginAttempt(channel, selectGroup)
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
 	if newAPIError != nil {
+		service.ReleaseChannelConcurrencyLease(c)
 		return nil, newAPIError
 	}
 	return channel, nil
@@ -512,6 +524,10 @@ func executeTaskSubmissionWith(
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
+			if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+				taskErr = service.TaskErrorWrapperLocal(err, string(types.ErrorCodeChannelConcurrencyLimitExceeded), http.StatusTooManyRequests)
+				break
+			}
 			policy.BeginAttempt(channel, relayInfo.UsingGroup)
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {

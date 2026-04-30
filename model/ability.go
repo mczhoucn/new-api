@@ -213,6 +213,61 @@ func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
 	return false
 }
 
+// GetAvailableChannel selects a channel while skipping saturated candidates at each priority.
+func GetAvailableChannel(group string, modelName string, retry int, filters []dto.ChannelFilter) (*Channel, error) {
+	var abilities []Ability
+	if err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, modelName, true).
+		Order("priority DESC, weight DESC").Find(&abilities).Error; err != nil {
+		return nil, err
+	}
+	abilities = filterAbilitiesByConstraints(abilities, modelName, filters)
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+	priorities := make([]int64, 0)
+	seen := make(map[int64]bool)
+	for _, ability := range abilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if !seen[priority] {
+			seen[priority] = true
+			priorities = append(priorities, priority)
+		}
+	}
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+	var lastFullErr error
+	for priorityIndex := retry; priorityIndex < len(priorities); priorityIndex++ {
+		target := priorities[priorityIndex]
+		candidates := make([]*Channel, 0)
+		for _, ability := range abilities {
+			priority := int64(0)
+			if ability.Priority != nil {
+				priority = *ability.Priority
+			}
+			if priority != target {
+				continue
+			}
+			channel, err := GetChannelById(ability.ChannelId, true)
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, channel)
+		}
+		channel, err := pickAvailableChannelByWeight(candidates)
+		if channel != nil {
+			return channel, nil
+		}
+		if err != nil {
+			lastFullErr = err
+		}
+	}
+	return nil, lastFullErr
+}
+
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")

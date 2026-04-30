@@ -325,6 +325,47 @@ function TagWeightCell({ channel }: { channel: TagRow }) {
   )
 }
 
+function ConcurrencyCell({ channel }: { channel: Channel }) {
+  const { t } = useTranslation()
+  const channels = isTagAggregateRow(channel) ? channel.children || [] : [channel]
+  const current = channels.reduce(
+    (total, item) => total + (item.current_concurrency ?? 0),
+    0
+  )
+  const limit = channels.reduce(
+    (total, item) => total + (item.concurrency_limit ?? 10),
+    0
+  )
+  const ratio = limit > 0 ? current / limit : 1
+  const variant: StatusBadgeProps['variant'] =
+    current >= limit ? 'danger' : ratio >= 0.8 ? 'warning' : 'success'
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <StatusBadge
+              label={`${current}/${limit}`}
+              variant={variant}
+              copyable={false}
+              className='-ml-1.5'
+            />
+          }
+        />
+        <TooltipContent side='top'>
+          <p>
+            {t('Current / Limit: {{current}} / {{limit}}', {
+              current,
+              limit,
+            })}
+          </p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 /**
  * Inline balance/used values longer than this switch to locale-aware compact
  * notation (e.g. "$28万"); the precise value stays available in the tooltip.
@@ -1165,6 +1206,16 @@ export function useChannelsColumns(
         meta: { mobileHidden: true },
         cell: ({ row }) => <WeightCell channel={row.original} />,
         size: 90,
+        enableSorting: false,
+      },
+
+      // Concurrency column
+      {
+        accessorKey: 'current_concurrency',
+        header: t('Concurrency'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => <ConcurrencyCell channel={row.original} />,
+        size: 110,
         enableSorting: false,
       },
 

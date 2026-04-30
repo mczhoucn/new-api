@@ -88,6 +88,7 @@ var channelReadOnlyFields = map[string]struct{}{
 	"balance":              {},
 	"balance_updated_time": {},
 	"used_quota":           {},
+	"current_concurrency":  {},
 }
 
 func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]any) {
@@ -133,4 +134,5 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"remark":              {},
 	"channel_info":        {},
 	"multi_key_mode":      {},
+	"concurrency_limit":   {},
 }
