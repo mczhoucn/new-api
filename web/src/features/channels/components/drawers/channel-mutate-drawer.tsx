@@ -2243,6 +2243,29 @@ export function ChannelMutateDrawer({
 
       <FormField
         control={form.control}
+        name='exclude_auto_test'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between'>
+            <div className='space-y-0.5'>
+              <FormLabel>{t('Exclude from automatic tests')}</FormLabel>
+              <FormDescription>
+                {t(
+                  'Scheduled channel tests skip this channel; manual tests still run.'
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
         name='test_model'
         render={({ field }) => (
           <FormItem>

@@ -333,20 +333,22 @@ func TestSelectChannelsForAutomaticTestPassiveRecoveryOnlyUsesAutoDisabled(t *te
 		{Id: 3, Status: common.ChannelStatusManuallyDisabled},
 	}
 
-	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModePassiveRecovery)
+	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModePassiveRecovery, false)
 
 	require.Len(t, selected, 1)
 	require.Equal(t, 2, selected[0].Id)
 }
 
-func TestSelectChannelsForAutomaticTestScheduledSkipsManualDisabled(t *testing.T) {
+func TestSelectChannelsForAutomaticTestScheduledSkipsManualAndExcluded(t *testing.T) {
+	excluded := true
 	channels := []*model.Channel{
 		{Id: 1, Status: common.ChannelStatusEnabled},
 		{Id: 2, Status: common.ChannelStatusAutoDisabled},
 		{Id: 3, Status: common.ChannelStatusManuallyDisabled},
+		{Id: 4, Status: common.ChannelStatusEnabled, ExcludeAutoTest: &excluded},
 	}
 
-	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModeScheduledAll)
+	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModeScheduledAll, false)
 
 	require.Len(t, selected, 2)
 	require.Equal(t, 1, selected[0].Id)
@@ -364,7 +366,7 @@ func TestSelectChannelsForAutomaticTestAutoBanOnlyUsesEligibleChannels(t *testin
 		{Id: 5, Status: common.ChannelStatusEnabled},
 	}
 
-	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModeAutoBanOnly)
+	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModeAutoBanOnly, false)
 
 	require.Len(t, selected, 2)
 	require.Equal(t, 1, selected[0].Id)
@@ -476,6 +478,28 @@ func TestRunChannelTestWorkersStopsAfterCancellation(t *testing.T) {
 	assert.Equal(t, []int{0}, progress)
 }
 
+func TestSelectChannelsForManualTestIncludesAutoTestExcluded(t *testing.T) {
+	excluded := true
+	channels := []*model.Channel{
+		{Id: 1, Status: common.ChannelStatusEnabled, ExcludeAutoTest: &excluded},
+		{Id: 2, Status: common.ChannelStatusManuallyDisabled, ExcludeAutoTest: &excluded},
+	}
+
+	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModeScheduledAll, true)
+
+	require.Len(t, selected, 1)
+	require.Equal(t, 1, selected[0].Id)
+}
+
+func TestChannelAutoTestExclusionDefaultsToIncluded(t *testing.T) {
+	require.False(t, (&model.Channel{}).IsAutoTestExcluded())
+}
+
+func TestChannelAutoTestExclusionCanBeEnabled(t *testing.T) {
+	excluded := true
+	require.True(t, (&model.Channel{ExcludeAutoTest: &excluded}).IsAutoTestExcluded())
+}
+
 func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}))
@@ -492,4 +516,23 @@ func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "已有通道测试任务正在运行或等待中")
+}
+
+func TestTestAllChannelsIncludesAutoTestExcludedInManualTask(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}))
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/test", nil)
+
+	TestAllChannels(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	task, err := model.GetActiveSystemTask(model.SystemTaskTypeChannelTest)
+	require.NoError(t, err)
+	require.NotNil(t, task)
+	payload := channelTestTaskPayload{}
+	require.NoError(t, task.DecodePayload(&payload))
+	require.True(t, payload.IncludeAutoTestExcluded)
 }

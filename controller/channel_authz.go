@@ -135,4 +135,5 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"channel_info":        {},
 	"multi_key_mode":      {},
 	"concurrency_limit":   {},
+	"exclude_auto_test":   {},
 }

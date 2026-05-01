@@ -1102,7 +1102,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 // trigger passes ChannelTestModeScheduledAll to test every channel. When notify
 // is set the root user is notified on completion. Cross-instance execution is
 // guarded by the system task per-type lock, so no process-local guard is needed.
-func runChannelTestTask(ctx context.Context, mode string, notify bool, report func(processed, total int)) (channelTestSummary, error) {
+func runChannelTestTask(ctx context.Context, mode string, notify bool, includeAutoTestExcluded bool, report func(processed, total int)) (channelTestSummary, error) {
 	testUserID, err := resolveChannelTestUserID(nil)
 	if err != nil {
 		return channelTestSummary{}, err
@@ -1114,7 +1114,7 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	if strings.TrimSpace(mode) == "" {
 		mode = operation_setting.GetMonitorSetting().ChannelTestMode
 	}
-	selected := selectChannelsForAutomaticTest(channels, mode)
+	selected := selectChannelsForAutomaticTest(channels, mode, includeAutoTestExcluded)
 	allowDisable := mode != operation_setting.ChannelTestModePassiveRecovery
 	concurrency := operation_setting.GetMonitorSetting().ChannelTestConcurrency
 	summary := performChannelTests(ctx, selected, testUserID, allowDisable, concurrency, report)
@@ -1124,10 +1124,13 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	return summary, nil
 }
 
-func selectChannelsForAutomaticTest(channels []*model.Channel, mode string) []*model.Channel {
+func selectChannelsForAutomaticTest(channels []*model.Channel, mode string, includeAutoTestExcluded bool) []*model.Channel {
 	selected := make([]*model.Channel, 0, len(channels))
 	for _, channel := range channels {
 		if channel.Status == common.ChannelStatusManuallyDisabled {
+			continue
+		}
+		if !includeAutoTestExcluded && channel.IsAutoTestExcluded() {
 			continue
 		}
 		if mode == operation_setting.ChannelTestModeAutoBanOnly && !channel.GetAutoBan() {
@@ -1146,8 +1149,9 @@ func selectChannelsForAutomaticTest(channels []*model.Channel, mode string) []*m
 // rejected so the caller does not mistake a scheduled run for this manual one.
 func TestAllChannels(c *gin.Context) {
 	task, created, err := service.EnqueueSystemTask(model.SystemTaskTypeChannelTest, channelTestTaskPayload{
-		Mode:   operation_setting.ChannelTestModeScheduledAll,
-		Notify: true,
+		Mode:                    operation_setting.ChannelTestModeScheduledAll,
+		Notify:                  true,
+		IncludeAutoTestExcluded: true,
 	})
 	if err != nil {
 		common.ApiError(c, err)

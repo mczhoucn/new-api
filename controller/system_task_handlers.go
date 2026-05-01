@@ -51,8 +51,9 @@ func (channelTestHandler) NewPayload() any { return nil }
 // Notify=true to reproduce the legacy manual behavior (test every channel and
 // notify root on completion).
 type channelTestTaskPayload struct {
-	Mode   string `json:"mode,omitempty"`
-	Notify bool   `json:"notify,omitempty"`
+	Mode                    string `json:"mode,omitempty"`
+	Notify                  bool   `json:"notify,omitempty"`
+	IncludeAutoTestExcluded bool   `json:"include_auto_test_excluded,omitempty"`
 }
 
 func (channelTestHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
@@ -61,7 +62,13 @@ func (channelTestHandler) Run(ctx context.Context, task *model.SystemTask, runne
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
-	summary, err := runChannelTestTask(ctx, payload.Mode, payload.Notify, service.NewSystemTaskProgressReporter(task, runnerID))
+	summary, err := runChannelTestTask(
+		ctx,
+		payload.Mode,
+		payload.Notify,
+		payload.IncludeAutoTestExcluded,
+		service.NewSystemTaskProgressReporter(task, runnerID),
+	)
 	if err != nil {
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return

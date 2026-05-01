@@ -337,8 +337,12 @@ function ConcurrencyCell({ channel }: { channel: Channel }) {
     0
   )
   const ratio = limit > 0 ? current / limit : 1
-  const variant: StatusBadgeProps['variant'] =
-    current >= limit ? 'danger' : ratio >= 0.8 ? 'warning' : 'success'
+  let variant: StatusBadgeProps['variant'] = 'success'
+  if (current >= limit) {
+    variant = 'danger'
+  } else if (ratio >= 0.8) {
+    variant = 'warning'
+  }
 
   return (
     <TooltipProvider>
