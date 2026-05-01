@@ -666,6 +666,19 @@ func shouldUseStreamForAutomaticChannelTest(channel *model.Channel) bool {
 	return channel != nil && channel.Type == constant.ChannelTypeCodex
 }
 
+func shouldTestChannelInAllChannels(channel *model.Channel, skipAutoTestExcluded bool) bool {
+	if channel == nil {
+		return false
+	}
+	if channel.Status == common.ChannelStatusManuallyDisabled {
+		return false
+	}
+	if skipAutoTestExcluded && channel.IsAutoTestExcluded() {
+		return false
+	}
+	return true
+}
+
 func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 	if len(jsonBytes) == 0 {
 		return ""
@@ -887,7 +900,7 @@ func TestChannel(c *gin.Context) {
 var testAllChannelsLock sync.Mutex
 var testAllChannelsRunning bool = false
 
-func testAllChannels(notify bool) error {
+func testAllChannels(notify bool, skipAutoTestExcluded bool) error {
 
 	testAllChannelsLock.Lock()
 	if testAllChannelsRunning {
@@ -913,7 +926,7 @@ func testAllChannels(notify bool) error {
 		}()
 
 		for _, channel := range channels {
-			if channel.Status == common.ChannelStatusManuallyDisabled {
+			if !shouldTestChannelInAllChannels(channel, skipAutoTestExcluded) {
 				continue
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
@@ -960,7 +973,7 @@ func testAllChannels(notify bool) error {
 }
 
 func TestAllChannels(c *gin.Context) {
-	err := testAllChannels(true)
+	err := testAllChannels(true, false)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -989,7 +1002,7 @@ func AutomaticallyTestChannels() {
 				time.Sleep(time.Duration(int(math.Round(frequency))) * time.Minute)
 				common.SysLog(fmt.Sprintf("automatically test channels with interval %f minutes", frequency))
 				common.SysLog("automatically testing all channels")
-				_ = testAllChannels(false)
+				_ = testAllChannels(false, true)
 				common.SysLog("automatically channel test finished")
 				if !operation_setting.GetMonitorSetting().AutoTestChannelEnabled {
 					break

@@ -182,6 +182,7 @@ const EditChannelModal = (props) => {
     status_code_mapping: '',
     models: [],
     auto_ban: 1,
+    exclude_auto_test: false,
     test_model: '',
     groups: ['default'],
     priority: 0,
@@ -838,6 +839,7 @@ const EditChannelModal = (props) => {
       } else {
         data.groups = data.group.split(',');
       }
+      data.exclude_auto_test = data.exclude_auto_test === true;
       if (data.model_mapping !== '') {
         data.model_mapping = JSON.stringify(
           JSON.parse(data.model_mapping),
@@ -3676,6 +3678,19 @@ const EditChannelModal = (props) => {
                       '仅当自动禁用开启时有效，关闭后不会自动禁用该渠道',
                     )}
                     initValue={autoBan}
+                  />
+
+                  <Form.Switch
+                    field='exclude_auto_test'
+                    label={t('排除自动检测')}
+                    checkedText={t('开')}
+                    uncheckedText={t('关')}
+                    onChange={(value) =>
+                      handleInputChange('exclude_auto_test', value)
+                    }
+                    extraText={t(
+                      '开启后，定时自动检测不会测试该渠道，手动测试不受影响',
+                    )}
                   />
 
                   {/* Test Model - Core Config */}

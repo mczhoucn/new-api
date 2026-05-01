@@ -3641,6 +3641,8 @@
     "默认情况下，所有用户创建令牌时看到的可选分组列表是一样的（即「用户可选」列勾选的分组）。": "By default, all users see the same selectable group list when creating tokens (i.e., groups with \"User Selectable\" checked).",
     "默认折叠侧边栏": "Réduire la barre latérale par défaut",
     "默认测试模型": "Modèle de test par défaut",
+    "排除自动检测": "Exclure du test automatique",
+    "开启后，定时自动检测不会测试该渠道，手动测试不受影响": "Une fois activé, les tests automatiques planifiés ignoreront ce canal. Les tests manuels ne sont pas affectés.",
     "默认用户消息": "Bonjour",
     "默认补全倍率": "Taux de complétion par défaut"
   }

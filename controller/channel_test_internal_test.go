@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
@@ -68,4 +69,34 @@ func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
 	require.Equal(t, "tiered_expr", other["billing_mode"])
 	require.Equal(t, "base", other["matched_tier"])
 	require.NotEmpty(t, other["expr_b64"])
+}
+
+func TestChannelAutoTestExclusionDefaultsToIncluded(t *testing.T) {
+	channel := &model.Channel{}
+
+	require.False(t, channel.IsAutoTestExcluded())
+}
+
+func TestChannelAutoTestExclusionCanBeEnabled(t *testing.T) {
+	excluded := true
+	channel := &model.Channel{ExcludeAutoTest: &excluded}
+
+	require.True(t, channel.IsAutoTestExcluded())
+}
+
+func TestAllChannelTestFilterOnlySkipsExcludedForAutomaticRun(t *testing.T) {
+	excluded := true
+	channel := &model.Channel{
+		Status:          common.ChannelStatusEnabled,
+		ExcludeAutoTest: &excluded,
+	}
+
+	require.False(t, shouldTestChannelInAllChannels(channel, true))
+	require.True(t, shouldTestChannelInAllChannels(channel, false))
+}
+
+func TestAllChannelTestFilterAlwaysSkipsManuallyDisabled(t *testing.T) {
+	channel := &model.Channel{Status: common.ChannelStatusManuallyDisabled}
+
+	require.False(t, shouldTestChannelInAllChannels(channel, false))
 }
