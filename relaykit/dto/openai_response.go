@@ -371,6 +371,9 @@ type ResponsesOutput struct {
 	Summary             []ResponsesReasoningSummaryPart `json:"summary,omitempty"`
 	Quality             string                          `json:"quality"`
 	Size                string                          `json:"size"`
+	RevisedPrompt       string                          `json:"revised_prompt,omitempty"`
+	OutputFormat        string                          `json:"output_format,omitempty"`
+	Background          string                          `json:"background,omitempty"`
 	Result              string                          `json:"result,omitempty"`
 	CallId              string                          `json:"call_id,omitempty"`
 	Name                string                          `json:"name,omitempty"`
