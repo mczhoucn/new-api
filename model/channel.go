@@ -72,13 +72,26 @@ type ChannelInfo struct {
 
 // Value implements driver.Valuer interface
 func (c ChannelInfo) Value() (driver.Value, error) {
-	return common.Marshal(&c)
+	data, err := common.Marshal(&c)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
 }
 
 // Scan implements sql.Scanner interface
 func (c *ChannelInfo) Scan(value interface{}) error {
-	bytesValue, _ := value.([]byte)
-	return common.Unmarshal(bytesValue, c)
+	switch v := value.(type) {
+	case nil:
+		*c = ChannelInfo{}
+		return nil
+	case []byte:
+		return common.Unmarshal(v, c)
+	case string:
+		return common.Unmarshal([]byte(v), c)
+	default:
+		return fmt.Errorf("unsupported ChannelInfo scan type %T", value)
+	}
 }
 
 func (channel *Channel) GetKeys() []string {
