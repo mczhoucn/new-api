@@ -232,9 +232,17 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 		oaiUsage.ClaudeCacheCreation5mTokens,
 		oaiUsage.ClaudeCacheCreation1hTokens,
 	)
+	inputTokens := oaiUsage.InputTokens
+	if inputTokens == 0 {
+		inputTokens = oaiUsage.PromptTokens
+	}
+	outputTokens := oaiUsage.OutputTokens
+	if outputTokens == 0 {
+		outputTokens = oaiUsage.CompletionTokens
+	}
 	usage := &dto.ClaudeUsage{
-		InputTokens:              oaiUsage.PromptTokens,
-		OutputTokens:             oaiUsage.CompletionTokens,
+		InputTokens:              inputTokens,
+		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: oaiUsage.PromptTokensDetails.CachedCreationTokens,
 		CacheReadInputTokens:     oaiUsage.PromptTokensDetails.CachedTokens,
 	}
@@ -470,7 +478,9 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 				oaiUsage = info.ClaudeConvertInfo.Usage
 				// Some upstreams emit finish_reason first, then send a final usage-only chunk.
 				// Defer closing until usage is available so the final message_delta carries it.
-				return claudeResponses
+				if oaiUsage == nil {
+					return claudeResponses
+				}
 			}
 		}
 

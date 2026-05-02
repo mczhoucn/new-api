@@ -25,6 +25,8 @@ func ResponseText2Usage(c *gin.Context, responseText string, modeName string, pr
 	usage.PromptTokens = promptTokens
 	usage.CompletionTokens = EstimateTokenByModel(modeName, responseText)
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	usage.InputTokens = usage.PromptTokens
+	usage.OutputTokens = usage.CompletionTokens
 	return usage
 }
 
