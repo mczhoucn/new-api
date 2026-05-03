@@ -488,7 +488,8 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 			newAPIError: respErr,
 		}
 	}
-	usage, usageErr := coerceTestUsage(usageA, isStream, info.GetEstimatePromptTokens())
+	effectiveIsStream := info.IsStream
+	usage, usageErr := coerceTestUsage(usageA, effectiveIsStream, info.GetEstimatePromptTokens())
 	if usageErr != nil {
 		return testResult{
 			context:     c,
@@ -497,7 +498,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		}
 	}
 	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, isStream)
+	respBody, err := readTestResponseBody(result.Body, effectiveIsStream)
 	if err != nil {
 		return testResult{
 			context:     c,
@@ -505,7 +506,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 			newAPIError: types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError),
 		}
 	}
-	if bodyErr := validateTestResponseBody(respBody, isStream); bodyErr != nil {
+	if bodyErr := validateTestResponseBody(respBody, effectiveIsStream); bodyErr != nil {
 		return testResult{
 			context:     c,
 			localErr:    bodyErr,
@@ -681,8 +682,20 @@ func validateTestResponseBody(respBody []byte, isStream bool) error {
 	return nil
 }
 
-func shouldUseStreamForAutomaticChannelTest(channel *model.Channel) bool {
-	return channel != nil && channel.Type == constant.ChannelTypeCodex
+func defaultChannelTestStream() bool {
+	return true
+}
+
+func parseChannelTestStream(c *gin.Context) bool {
+	streamValue, ok := c.GetQuery("stream")
+	if !ok {
+		return defaultChannelTestStream()
+	}
+	isStream, err := strconv.ParseBool(streamValue)
+	if err != nil {
+		return false
+	}
+	return isStream
 }
 
 func shouldTestChannelInAllChannels(channel *model.Channel, skipAutoTestExcluded bool) bool {
@@ -890,7 +903,7 @@ func TestChannel(c *gin.Context) {
 	//}()
 	testModel := c.Query("model")
 	endpointType := c.Query("endpoint_type")
-	isStream, _ := strconv.ParseBool(c.Query("stream"))
+	isStream := parseChannelTestStream(c)
 	tik := time.Now()
 	result := testChannel(channel, testModel, endpointType, isStream)
 	if result.localErr != nil {
@@ -959,7 +972,7 @@ func testAllChannels(notify bool, skipAutoTestExcluded bool) error {
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			tik := time.Now()
-			result := testChannel(channel, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+			result := testChannel(channel, "", "", defaultChannelTestStream())
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 

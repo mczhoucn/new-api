@@ -2951,7 +2951,7 @@
     "语音输出": "音声出力",
     "说明": "説明",
     "说明：": "説明：",
-    "说明：本页测试为非流式请求；若渠道仅支持流式返回，可能出现测试失败，请以实际使用为准。": "注意: このページのテストは非ストリーミングリクエストです。チャネルがストリーミング応答のみ対応の場合、テストが失敗することがあります。実際の利用結果を優先してください。",
+    "说明：本页默认使用流式请求测试；关闭流式时将显式禁用流式测试。": "Note: Tests on this page use streaming requests by default; turning streaming off explicitly disables streaming tests.",
     "说明：生成结果是可直接粘贴到渠道密钥里的 JSON（包含 access_token / refresh_token / account_id）。": "注：生成結果はチャネルキーに直接貼り付けられるJSON（access_token / refresh_token / account_idを含む）です。",
     "说明信息": "説明",
     "请上传密钥文件": "APIキーファイルをアップロードしてください",

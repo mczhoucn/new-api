@@ -64,10 +64,15 @@ const ModelTestModal = ({
     'jina-rerank',
     'openai-response-compact',
   ].includes(selectedEndpointType);
+  const streamAutoDisabledRef = React.useRef(false);
 
   React.useEffect(() => {
     if (streamToggleDisabled && isStreamTest) {
+      streamAutoDisabledRef.current = true;
       setIsStreamTest(false);
+    } else if (!streamToggleDisabled && streamAutoDisabledRef.current) {
+      streamAutoDisabledRef.current = false;
+      setIsStreamTest(true);
     }
   }, [streamToggleDisabled, isStreamTest, setIsStreamTest]);
 
@@ -322,7 +327,10 @@ const ModelTestModal = ({
               </Typography.Text>
               <Switch
                 checked={isStreamTest}
-                onChange={setIsStreamTest}
+                onChange={(value) => {
+                  streamAutoDisabledRef.current = false;
+                  setIsStreamTest(value);
+                }}
                 size='small'
                 disabled={streamToggleDisabled}
                 aria-label={t('流式')}
@@ -336,7 +344,7 @@ const ModelTestModal = ({
             icon={<IconInfoCircle />}
             className='!rounded-lg mb-2'
             description={t(
-              '说明：本页测试为非流式请求；若渠道仅支持流式返回，可能出现测试失败，请以实际使用为准。',
+              '说明：本页默认使用流式请求测试；关闭流式时将显式禁用流式测试。',
             )}
           />
 

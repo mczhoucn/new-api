@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -155,4 +156,32 @@ func TestAllChannelTestFilterAlwaysSkipsManuallyDisabled(t *testing.T) {
 	channel := &model.Channel{Status: common.ChannelStatusManuallyDisabled}
 
 	require.False(t, shouldTestChannelInAllChannels(channel, false))
+}
+
+func TestParseChannelTestStreamDefaultsToEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/test/1", nil)
+
+	require.True(t, parseChannelTestStream(ctx))
+}
+
+func TestParseChannelTestStreamCanDisableExplicitly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/test/1?stream=false", nil)
+
+	require.False(t, parseChannelTestStream(ctx))
+}
+
+func TestBuildTestRequestPreservesExplicitStreamFalse(t *testing.T) {
+	request := buildTestRequest("gpt-4o-mini", "", &model.Channel{Type: constant.ChannelTypeOpenAI}, false)
+
+	payload, err := common.Marshal(request)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"model":"gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`, string(payload))
+}
+
+func TestDefaultChannelTestStreamEnabledForAllChannels(t *testing.T) {
+	require.True(t, defaultChannelTestStream())
 }
