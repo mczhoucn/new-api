@@ -36,3 +36,8 @@ var ModelList = []string{
 }
 
 var ChannelName = "claude"
+
+// claudeCliTestUserAgent 用于渠道测试时伪装成 Claude Code CLI,
+// 以兼容部分要求 claude-cli/ 前缀的 anthropic 中转服务(如 yescode)。
+// 仅用于测试流程,不影响真实 /v1/messages 请求转发。
+const claudeCliTestUserAgent = "claude-cli/1.0.79 (external, cli)"

@@ -88,6 +88,18 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	}
 	req.Set("anthropic-version", anthropicVersion)
 	CommonClaudeHeadersOperation(c, req, info)
+	// User-Agent 处理:
+	//   - 渠道测试时:伪装为 Claude Code CLI,绕过部分 anthropic 中转的客户端校验。
+	//   - 客户端用 /v1/messages 真实转发时:把客户端 UA 透传给上游 /v1/messages,
+	//     保留 Claude Code CLI 等真实客户端身份;其他格式(如 OpenAI 端点转 Claude 上游)
+	//     不透传,避免误把 OpenAI SDK 的 UA 发给 Anthropic 上游。
+	if info.IsChannelTest {
+		req.Set("User-Agent", claudeCliTestUserAgent)
+	} else if info.RelayFormat == types.RelayFormatClaude {
+		if clientUA := c.Request.Header.Get("User-Agent"); clientUA != "" {
+			req.Set("User-Agent", clientUA)
+		}
+	}
 	return nil
 }
 

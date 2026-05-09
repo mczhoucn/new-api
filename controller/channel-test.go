@@ -31,8 +31,10 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/gin-gonic/gin"
 )
@@ -418,6 +420,20 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 			context:     c,
 			localErr:    err,
 			newAPIError: types.NewError(err, types.ErrorCodeJsonMarshalFailed),
+		}
+	}
+
+	// 渠道测试时,为 Anthropic 类渠道注入 metadata.session_id,以兼容
+	// 模拟 Claude Code CLI 客户端身份的第三方中转(如 yescode)。
+	// 仅作用于测试,不影响真实转发;Anthropic 官方 API 会忽略未知 metadata 字段。
+	if info.IsChannelTest && apiType == constant.APITypeAnthropic {
+		jsonData, err = sjson.SetBytes(jsonData, "metadata.session_id", uuid.New().String())
+		if err != nil {
+			return testResult{
+				context:     c,
+				localErr:    err,
+				newAPIError: types.NewError(err, types.ErrorCodeJsonMarshalFailed),
+			}
 		}
 	}
 
