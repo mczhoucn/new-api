@@ -1015,7 +1015,9 @@ func testAllChannels(notify bool, skipAutoTestExcluded bool) error {
 
 			// enable channel
 			if !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-				service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
+				if service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name) {
+					service.ClearChannelAffinityCacheForRecoveredChannel(channel)
+				}
 			}
 
 			channel.UpdateResponseTime(milliseconds)

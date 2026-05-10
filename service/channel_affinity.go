@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -20,11 +21,12 @@ import (
 )
 
 const (
-	ginKeyChannelAffinityCacheKey   = "channel_affinity_cache_key"
-	ginKeyChannelAffinityTTLSeconds = "channel_affinity_ttl_seconds"
-	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
-	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
-	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityCacheKey    = "channel_affinity_cache_key"
+	ginKeyChannelAffinityTTLSeconds  = "channel_affinity_ttl_seconds"
+	ginKeyChannelAffinityMeta        = "channel_affinity_meta"
+	ginKeyChannelAffinityLogInfo     = "channel_affinity_log_info"
+	ginKeyChannelAffinitySkipRetry   = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityInvalidated = "channel_affinity_invalidated"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -243,6 +245,169 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 		return 0, err
 	}
 	return deleted, nil
+}
+
+func ClearCurrentChannelAffinityCache(c *gin.Context) int {
+	if c == nil {
+		return 0
+	}
+	cacheKey, _, ok := getChannelAffinityContext(c)
+	if !ok {
+		return 0
+	}
+	c.Set(ginKeyChannelAffinityInvalidated, true)
+
+	cache := getChannelAffinityCache()
+	deleted, err := cache.DeleteMany([]string{cacheKey})
+	if err != nil {
+		common.SysError(fmt.Sprintf("channel affinity cache delete current failed: key=%s, err=%v", cacheKey, err))
+		return 0
+	}
+	if deleted[cache.FullKey(cacheKey)] {
+		return 1
+	}
+	return 0
+}
+
+func ClearChannelAffinityCacheForRecoveredChannel(channel *model.Channel) int {
+	setting := operation_setting.GetChannelAffinitySetting()
+	if setting == nil || !setting.Enabled || channel == nil {
+		return 0
+	}
+	prefixes, fullClear := channelAffinityRecoveryClearPrefixes(setting.Rules, channel)
+	if fullClear {
+		deleted := ClearChannelAffinityCacheAll()
+		common.SysLog(fmt.Sprintf("unscoped affinity recovery clear: channel_id=%d, deleted=%d", channel.Id, deleted))
+		return deleted
+	}
+	if len(prefixes) == 0 {
+		return 0
+	}
+
+	cache := getChannelAffinityCache()
+	deletedTotal := 0
+	for _, prefix := range prefixes {
+		deleted, err := cache.DeleteByPrefix(prefix)
+		if err != nil {
+			common.SysError(fmt.Sprintf("channel affinity recovery clear failed: channel_id=%d, prefix=%s, err=%v", channel.Id, prefix, err))
+			continue
+		}
+		deletedTotal += deleted
+	}
+	return deletedTotal
+}
+
+func channelAffinityRecoveryClearPrefixes(rules []operation_setting.ChannelAffinityRule, channel *model.Channel) ([]string, bool) {
+	if channel == nil {
+		return nil, false
+	}
+	models := splitChannelAffinityCSV(channel.Models)
+	groups := splitChannelAffinityCSV(channel.Group)
+	prefixSet := make(map[string]struct{})
+	fullClear := false
+
+	for _, rule := range rules {
+		matchingModels := matchingChannelAffinityModels(rule, models)
+		if len(matchingModels) == 0 {
+			continue
+		}
+		if !rule.IncludeRuleName || strings.TrimSpace(rule.Name) == "" {
+			fullClear = true
+			continue
+		}
+
+		modelParts := []string{""}
+		if rule.IncludeModelName {
+			// The write path keys affinity by the request model. Channel recovery only has
+			// channel.Models, which may be a normalized wildcard, so clear at rule scope.
+			prefix := buildChannelAffinityPrefix(rule, "", "")
+			if prefix != "" {
+				prefixSet[prefix] = struct{}{}
+			}
+			continue
+		}
+		groupParts := []string{""}
+		if rule.IncludeUsingGroup {
+			groupParts = appendChannelAffinityGroupPart(groups, "auto")
+			if len(groupParts) == 0 {
+				continue
+			}
+		}
+
+		for _, modelName := range modelParts {
+			for _, group := range groupParts {
+				prefix := buildChannelAffinityPrefix(rule, modelName, group)
+				if prefix != "" {
+					prefixSet[prefix] = struct{}{}
+				}
+			}
+		}
+	}
+
+	prefixes := make([]string, 0, len(prefixSet))
+	for prefix := range prefixSet {
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, fullClear
+}
+
+func matchingChannelAffinityModels(rule operation_setting.ChannelAffinityRule, models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	matched := make([]string, 0, len(models))
+	for _, modelName := range models {
+		if matchAnyRegexCached(rule.ModelRegex, modelName) {
+			matched = append(matched, modelName)
+		}
+	}
+	return matched
+}
+
+func appendChannelAffinityGroupPart(groups []string, group string) []string {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return groups
+	}
+	out := append([]string{}, groups...)
+	for _, existing := range out {
+		if existing == group {
+			return out
+		}
+	}
+	return append(out, group)
+}
+
+func buildChannelAffinityPrefix(rule operation_setting.ChannelAffinityRule, modelName string, usingGroup string) string {
+	parts := make([]string, 0, 3)
+	if rule.IncludeRuleName && strings.TrimSpace(rule.Name) != "" {
+		parts = append(parts, strings.TrimSpace(rule.Name))
+	}
+	if rule.IncludeModelName && strings.TrimSpace(modelName) != "" {
+		parts = append(parts, strings.TrimSpace(modelName))
+	}
+	if rule.IncludeUsingGroup && strings.TrimSpace(usingGroup) != "" {
+		parts = append(parts, strings.TrimSpace(usingGroup))
+	}
+	return strings.Join(parts, ":")
+}
+
+func splitChannelAffinityCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
+	}
+	return out
 }
 
 func matchAnyRegexCached(patterns []string, s string) bool {
@@ -681,7 +846,11 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if setting == nil || !setting.Enabled {
 		return
 	}
-	if setting.SwitchOnSuccess && c != nil {
+	forceSwitchOnSuccess := false
+	if c != nil {
+		forceSwitchOnSuccess = c.GetBool(ginKeyChannelAffinityInvalidated)
+	}
+	if (setting.SwitchOnSuccess || forceSwitchOnSuccess) && c != nil {
 		if successChannelID := c.GetInt("channel_id"); successChannelID > 0 {
 			channelID = successChannelID
 		}
