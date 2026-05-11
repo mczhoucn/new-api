@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -256,5 +257,181 @@ func TestOaiResponsesToChatStreamHandlerErrorsWithoutCompleted(t *testing.T) {
 	got := w.Body.String()
 	if strings.Contains(got, `event: message_stop`) {
 		t.Fatalf("must not emit Claude message_stop for incomplete Responses stream, got:\n%s", got)
+	}
+}
+
+// ── OaiResponsesStreamToChatHandler tests ────────────────────────────────────
+
+func newOpenAIResponsesTestContext(t *testing.T) (*httptest.ResponseRecorder, *gin.Context, *relaycommon.RelayInfo) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		IsStream:    false,
+		RelayFormat: types.RelayFormatOpenAI,
+		OriginModelName: "gpt-5.5",
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.5"},
+	}
+	return w, c, info
+}
+
+func TestOaiResponsesStreamToChatHandler_BasicText(t *testing.T) {
+	w, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Hello "}`,
+		`data: {"type":"response.output_text.delta","delta":"world."}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world.","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}`,
+	}, "\n\n") + "\n\n"
+
+	usage, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+	if usage.TotalTokens != 8 {
+		t.Fatalf("expected total_tokens=8, got %d", usage.TotalTokens)
+	}
+	got := w.Body.String()
+	if !strings.Contains(got, `"Hello world."`) {
+		t.Fatalf("expected aggregated text in response, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"finish_reason":"stop"`) {
+		t.Fatalf("expected finish_reason stop, got:\n%s", got)
+	}
+}
+
+func TestOaiResponsesStreamToChatHandler_LengthFinishReason(t *testing.T) {
+	w, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Partial"}`,
+		`data: {"type":"response.incomplete","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Partial","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+	}, "\n\n") + "\n\n"
+
+	usage, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+	if usage.TotalTokens != 7 {
+		t.Fatalf("expected total_tokens=7, got %d", usage.TotalTokens)
+	}
+	got := w.Body.String()
+	if !strings.Contains(got, `"finish_reason":"length"`) {
+		t.Fatalf("expected finish_reason length for incomplete stream, got:\n%s", got)
+	}
+}
+
+func TestOaiResponsesStreamToChatHandler_NoTerminalEvent_Returns502(t *testing.T) {
+	_, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Partial only."}`,
+	}, "\n\n") + "\n\n"
+
+	_, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr == nil {
+		t.Fatal("expected error for stream without terminal event")
+	}
+	if apiErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", apiErr.StatusCode)
+	}
+}
+
+func TestOaiResponsesStreamToChatHandler_ToolCallDelta(t *testing.T) {
+	w, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"cmd\":"}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"\"ls\"}"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[],"usage":{"input_tokens":5,"output_tokens":4,"total_tokens":9}}}`,
+	}, "\n\n") + "\n\n"
+
+	usage, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+	if usage.TotalTokens != 9 {
+		t.Fatalf("expected total_tokens=9, got %d", usage.TotalTokens)
+	}
+	got := w.Body.String()
+	if !strings.Contains(got, `"tool_calls"`) {
+		t.Fatalf("expected tool_calls in response, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected finish_reason tool_calls, got:\n%s", got)
+	}
+}
+
+func TestOaiResponsesStreamToChatHandler_ToolCallDoneSupersedesDelta(t *testing.T) {
+	w, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"cmd\":\"wrong\"}"}`,
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","delta":"{\"cmd\":\"correct\"}"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[],"usage":{"input_tokens":5,"output_tokens":4,"total_tokens":9}}}`,
+	}, "\n\n") + "\n\n"
+
+	_, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+	got := w.Body.String()
+	if strings.Contains(got, "wrong") {
+		t.Fatalf("delta args must be superseded by done args, got:\n%s", got)
+	}
+	if !strings.Contains(got, "correct") {
+		t.Fatalf("expected done args in response, got:\n%s", got)
+	}
+}
+
+func TestOaiResponsesStreamToChatHandler_TopLevelErrorEvent(t *testing.T) {
+	_, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"error","error":{"type":"server_error","code":"internal_error","message":"upstream failed","param":""}}`,
+	}, "\n\n") + "\n\n"
+
+	_, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr == nil {
+		t.Fatal("expected error for top-level error event")
+	}
+	if !strings.Contains(apiErr.Error(), "upstream failed") {
+		t.Fatalf("expected error message preserved, got: %s", apiErr.Error())
+	}
+}
+
+func TestOaiResponsesStreamToChatHandler_ContextCancelled_Returns504(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	info := &relaycommon.RelayInfo{
+		IsStream:    false,
+		RelayFormat: types.RelayFormatOpenAI,
+		OriginModelName: "gpt-5.5",
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.5"},
+	}
+
+	// cancel before the handler reads anything
+	cancel()
+
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_text.delta","delta":"line1"}`,
+		`data: {"type":"response.output_text.delta","delta":"line2"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+	}, "\n\n") + "\n\n"
+
+	_, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr == nil {
+		t.Fatal("expected error when context is cancelled")
+	}
+	if apiErr.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504, got %d", apiErr.StatusCode)
 	}
 }

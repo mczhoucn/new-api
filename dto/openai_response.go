@@ -405,6 +405,16 @@ type ResponsesStreamResponse struct {
 	SummaryIndex *int                           `json:"summary_index,omitempty"`
 	ItemID       string                         `json:"item_id,omitempty"`
 	Part         *ResponsesReasoningSummaryPart `json:"part,omitempty"`
+	// top-level error event (type: "error")
+	Error *ResponsesStreamError `json:"error,omitempty"`
+}
+
+// ResponsesStreamError 对应 OpenAI Responses streaming 顶层 error 事件的 error 字段
+type ResponsesStreamError struct {
+	Type    string `json:"type,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	Param   string `json:"param,omitempty"`
 }
 
 // GetOpenAIError 从动态错误类型中提取OpenAIError结构

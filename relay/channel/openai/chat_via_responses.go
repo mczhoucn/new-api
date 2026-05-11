@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,6 +76,327 @@ func applyResponsesUsage(dst *dto.Usage, src *dto.Usage) {
 	if src.CompletionTokenDetails.ReasoningTokens != 0 {
 		dst.CompletionTokenDetails.ReasoningTokens = src.CompletionTokenDetails.ReasoningTokens
 	}
+}
+
+// OaiResponsesStreamToChatHandler aggregates an upstream SSE /v1/responses stream into a single
+// non-streaming /v1/chat/completions JSON response. Used when the client requested non-streaming
+// but the upstream channel only supports (or was forced to use) streaming.
+func OaiResponsesStreamToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+
+	defer service.CloseResponseBodyGracefully(resp)
+
+	chatID := helper.GetResponseID(c)
+	responsesResp := &dto.OpenAIResponsesResponse{}
+	outputTextByIndex := make(map[int]string) // content_index → accumulated text
+	toolCallArgsByID := make(map[string]string)
+	toolCallNameByID := make(map[string]string)
+	toolCallCanonicalIDByItemID := make(map[string]string)
+	var usageText strings.Builder
+	var sawTerminal bool  // P1: track response.completed / response.incomplete
+	finishReason := "stop"
+
+	handleEvent := func(data string) *types.NewAPIError {
+		data = strings.TrimSpace(data)
+		if data == "" || data == "[DONE]" {
+			return nil
+		}
+		if !strings.HasPrefix(data, "{") {
+			return nil
+		}
+		var ev dto.ResponsesStreamResponse
+		if err := common.UnmarshalJsonStr(data, &ev); err != nil {
+			logger.LogWarn(c, "skip invalid responses stream event: "+err.Error())
+			return nil
+		}
+		switch ev.Type {
+		case "response.created":
+			if ev.Response != nil {
+				if ev.Response.ID != "" {
+					responsesResp.ID = ev.Response.ID
+				}
+				if ev.Response.Object != "" {
+					responsesResp.Object = ev.Response.Object
+				}
+				if ev.Response.Model != "" {
+					responsesResp.Model = ev.Response.Model
+				}
+				if ev.Response.CreatedAt != 0 {
+					responsesResp.CreatedAt = ev.Response.CreatedAt
+				}
+			}
+
+		case "response.output_text.delta":
+			idx := 0
+			if ev.ContentIndex != nil && *ev.ContentIndex >= 0 {
+				idx = *ev.ContentIndex
+			}
+			outputTextByIndex[idx] += ev.Delta
+			usageText.WriteString(ev.Delta)
+
+		case "response.output_item.added", "response.output_item.done":
+			if ev.Item == nil {
+				break
+			}
+			if ev.Item.Type == "function_call" {
+				itemID := strings.TrimSpace(ev.Item.ID)
+				callID := strings.TrimSpace(ev.Item.CallId)
+				if callID == "" {
+					callID = itemID
+				}
+				if itemID != "" && callID != "" {
+					toolCallCanonicalIDByItemID[itemID] = callID
+				}
+				if name := strings.TrimSpace(ev.Item.Name); name != "" {
+					toolCallNameByID[callID] = name
+					usageText.WriteString(name)
+				}
+				if args := ev.Item.ArgumentsString(); args != "" {
+					toolCallArgsByID[callID] = args
+					usageText.WriteString(args)
+				}
+			}
+
+		case "response.function_call_arguments.delta":
+			itemID := strings.TrimSpace(ev.ItemID)
+			callID := toolCallCanonicalIDByItemID[itemID]
+			if callID == "" {
+				callID = itemID
+			}
+			if callID != "" {
+				toolCallArgsByID[callID] += ev.Delta
+				usageText.WriteString(ev.Delta)
+			}
+
+		case "response.function_call_arguments.done":
+			// final/corrected arguments — overwrite any accumulated delta
+			itemID := strings.TrimSpace(ev.ItemID)
+			callID := toolCallCanonicalIDByItemID[itemID]
+			if callID == "" {
+				callID = itemID
+			}
+			if callID != "" && ev.Delta != "" {
+				toolCallArgsByID[callID] = ev.Delta
+			}
+
+		case "response.completed", "response.incomplete":
+			sawTerminal = true
+			if ev.Type == "response.incomplete" {
+				finishReason = "length"
+			}
+			if ev.Response == nil {
+				break
+			}
+			r := ev.Response
+			if r.ID != "" {
+				responsesResp.ID = r.ID
+			}
+			if r.Object != "" {
+				responsesResp.Object = r.Object
+			}
+			if r.Model != "" {
+				responsesResp.Model = r.Model
+			}
+			if r.CreatedAt != 0 {
+				responsesResp.CreatedAt = r.CreatedAt
+			}
+			if r.Usage != nil {
+				responsesResp.Usage = r.Usage
+			}
+			// Prefer the completed snapshot output; fall back to incrementally built output.
+			if len(r.Output) > 0 {
+				responsesResp.Output = r.Output
+				// Patch in any streamed args that arrived via delta events.
+				for i := range responsesResp.Output {
+					out := &responsesResp.Output[i]
+					if out.Type != "function_call" {
+						continue
+					}
+					callID := strings.TrimSpace(out.CallId)
+					if callID == "" {
+						callID = strings.TrimSpace(out.ID)
+					}
+					if name := toolCallNameByID[callID]; out.Name == "" && name != "" {
+						out.Name = name
+					}
+					if args := toolCallArgsByID[callID]; out.ArgumentsString() == "" && args != "" {
+						// store as JSON string literal
+						quoted, _ := common.Marshal(args)
+						out.Arguments = quoted
+					}
+				}
+			}
+
+		case "error":
+			// top-level error event from OpenAI Responses streaming API
+			if ev.Error != nil && ev.Error.Message != "" {
+				oaiErr := types.OpenAIError{
+					Type:    ev.Error.Type,
+					Code:    ev.Error.Code,
+					Message: ev.Error.Message,
+					Param:   ev.Error.Param,
+				}
+				return types.WithOpenAIError(oaiErr, http.StatusInternalServerError)
+			}
+			return types.NewOpenAIError(fmt.Errorf("responses stream error event"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+
+		case "response.error", "response.failed":
+			if ev.Response != nil {
+				if oaiErr := ev.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
+					return types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
+				}
+			}
+			return types.NewOpenAIError(fmt.Errorf("responses stream error: %s", ev.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
+		return nil
+	}
+
+	reqCtx := c.Request.Context()
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, helper.InitialScannerBufferSize), helper.DefaultMaxScannerBufferSize)
+	var dataLines []string
+	for scanner.Scan() {
+		select {
+		case <-reqCtx.Done():
+			return nil, types.NewOpenAIError(reqCtx.Err(), types.ErrorCodeBadResponse, http.StatusGatewayTimeout)
+		default:
+		}
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if len(dataLines) > 0 {
+				if apiErr := handleEvent(strings.Join(dataLines, "\n")); apiErr != nil {
+					return nil, apiErr
+				}
+				dataLines = dataLines[:0]
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, ":") || strings.HasPrefix(trimmed, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(line[5:])
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			if len(dataLines) > 0 {
+				if apiErr := handleEvent(strings.Join(dataLines, "\n")); apiErr != nil {
+					return nil, apiErr
+				}
+				dataLines = dataLines[:0]
+			}
+			break
+		}
+		dataLines = append(dataLines, data)
+	}
+	if len(dataLines) > 0 {
+		if apiErr := handleEvent(strings.Join(dataLines, "\n")); apiErr != nil {
+			return nil, apiErr
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+
+	// P1: reject truncated streams that never delivered a terminal event.
+	if !sawTerminal {
+		logger.LogError(c, "responses stream (non-stream aggregation) ended without terminal event")
+		return nil, types.NewOpenAIError(fmt.Errorf("responses stream ended without completion event"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
+
+	// Fill in defaults for fields not set via stream events.
+	if responsesResp.Object == "" {
+		responsesResp.Object = "response"
+	}
+	if responsesResp.CreatedAt == 0 {
+		responsesResp.CreatedAt = int(time.Now().Unix())
+	}
+	if responsesResp.Model == "" {
+		responsesResp.Model = info.UpstreamModelName
+	}
+
+	// If the completed event had no Output, synthesize from accumulated deltas.
+	if len(responsesResp.Output) == 0 {
+		// P3: synthesize function_call outputs from delta maps.
+		for callID, name := range toolCallNameByID {
+			if name == "" {
+				continue
+			}
+			args := toolCallArgsByID[callID]
+			quoted, _ := common.Marshal(args)
+			responsesResp.Output = append(responsesResp.Output, dto.ResponsesOutput{
+				Type:      "function_call",
+				CallId:    callID,
+				Name:      name,
+				Arguments: quoted,
+			})
+		}
+		// synthesize text output if no tool calls were found.
+		if len(responsesResp.Output) == 0 && len(outputTextByIndex) > 0 {
+			combined := strings.Builder{}
+			for i := 0; ; i++ {
+				t, ok := outputTextByIndex[i]
+				if !ok {
+					break
+				}
+				combined.WriteString(t)
+			}
+			if combined.Len() > 0 {
+				responsesResp.Output = []dto.ResponsesOutput{
+					{
+						Type: "message",
+						Role: "assistant",
+						Content: []dto.ResponsesOutputContent{
+							{Type: "output_text", Text: combined.String()},
+						},
+					},
+				}
+			}
+		}
+	}
+
+	chatResp, usage, err := service.ResponsesResponseToChatCompletionsResponse(responsesResp, chatID)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	// P2: propagate length finish_reason for incomplete streams.
+	if finishReason == "length" && len(chatResp.Choices) > 0 && chatResp.Choices[0].FinishReason == "stop" {
+		chatResp.Choices[0].FinishReason = "length"
+	}
+	if usage == nil || usage.TotalTokens == 0 {
+		text := service.ExtractOutputTextFromResponses(responsesResp)
+		if text == "" {
+			text = usageText.String()
+		}
+		usage = service.ResponseText2Usage(c, text, info.UpstreamModelName, info.GetEstimatePromptTokens())
+		chatResp.Usage = *usage
+	}
+
+	var responseBody []byte
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		claudeResp := service.ResponseOpenAI2Claude(chatResp, info)
+		responseBody, err = common.Marshal(claudeResp)
+	case types.RelayFormatGemini:
+		geminiResp := service.ResponseOpenAI2Gemini(chatResp, info)
+		responseBody, err = common.Marshal(geminiResp)
+	default:
+		responseBody, err = common.Marshal(chatResp)
+	}
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+	}
+
+	resp.Header.Del("Transfer-Encoding")
+	resp.Header.Set("Content-Type", "application/json")
+	service.IOCopyBytesGracefully(c, resp, responseBody)
+	return usage, nil
 }
 
 func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

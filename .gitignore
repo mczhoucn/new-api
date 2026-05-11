@@ -24,6 +24,7 @@ plans
 .claude
 
 electron/node_modules
+k8s
 electron/dist
 data/
 .gomodcache/
