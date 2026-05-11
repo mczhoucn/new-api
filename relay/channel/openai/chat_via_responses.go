@@ -95,7 +95,7 @@ func OaiResponsesStreamToChatHandler(c *gin.Context, info *relaycommon.RelayInfo
 	toolCallNameByID := make(map[string]string)
 	toolCallCanonicalIDByItemID := make(map[string]string)
 	var usageText strings.Builder
-	var sawTerminal bool  // P1: track response.completed / response.incomplete
+	var sawTerminal bool // P1: track response.completed / response.incomplete
 	finishReason := "stop"
 
 	handleEvent := func(data string) *types.NewAPIError {
@@ -554,6 +554,10 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	sendReasoningSummaryDelta := func(delta string) bool {
 		if delta == "" {
+			return true
+		}
+		if info.RelayFormat == types.RelayFormatClaude {
+			// OpenAI reasoning summaries do not have Anthropic thinking signatures.
 			return true
 		}
 		if needsReasoningSummarySeparator {

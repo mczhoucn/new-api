@@ -151,7 +151,15 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		requestBody = common.ReaderOnly(storage)
+		jsonData, err := io.ReadAll(common.ReaderOnly(storage))
+		if err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		jsonData, _, err = sanitizeInvalidClaudeThinkingBlocksJSON(jsonData)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		}
+		requestBody = bytes.NewReader(jsonData)
 	} else {
 		convertedRequest, err := adaptor.ConvertClaudeRequest(c, info, request)
 		if err != nil {
@@ -159,6 +167,10 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 		jsonData, err := common.Marshal(convertedRequest)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		}
+		jsonData, _, err = sanitizeInvalidClaudeThinkingBlocksJSON(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
@@ -211,4 +223,97 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil
+}
+
+func sanitizeInvalidClaudeThinkingBlocksJSON(jsonData []byte) ([]byte, bool, error) {
+	var payload map[string]any
+	if err := common.Unmarshal(jsonData, &payload); err != nil {
+		return nil, false, err
+	}
+	messages, changed := sanitizeClaudeMessagesValue(payload["messages"])
+	if !changed {
+		return jsonData, false, nil
+	}
+	payload["messages"] = messages
+	sanitized, err := common.Marshal(payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return sanitized, true, nil
+}
+
+func sanitizeClaudeMessagesValue(messagesValue any) ([]any, bool) {
+	messages, ok := messagesValue.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	changed := false
+	filteredMessages := messages[:0]
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			filteredMessages = append(filteredMessages, item)
+			continue
+		}
+		if sanitizeClaudeContentValue(message) {
+			changed = true
+		}
+		if isEmptyAssistantContentValue(message) {
+			changed = true
+			continue
+		}
+		filteredMessages = append(filteredMessages, item)
+	}
+	return filteredMessages, changed
+}
+
+func sanitizeClaudeContentValue(message map[string]any) bool {
+	content, ok := message["content"].([]any)
+	if !ok {
+		return false
+	}
+	filtered, changed := filterClaudeContentItems(content)
+	if changed {
+		message["content"] = filtered
+	}
+	return changed
+}
+
+func filterClaudeContentItems(content []any) ([]any, bool) {
+	filtered := content[:0]
+	changed := false
+	for _, item := range content {
+		contentMap, ok := item.(map[string]any)
+		if ok && shouldDropClaudeContentMap(contentMap) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, changed
+}
+
+func shouldDropClaudeContentMap(content map[string]any) bool {
+	contentType, _ := content["type"].(string)
+	switch contentType {
+	case "thinking":
+		thinking, thinkingOK := content["thinking"].(string)
+		signature, signatureOK := content["signature"].(string)
+		return !thinkingOK || strings.TrimSpace(thinking) == "" || !signatureOK || strings.TrimSpace(signature) == ""
+	case "redacted_thinking":
+		data, ok := content["data"].(string)
+		return !ok || strings.TrimSpace(data) == ""
+	default:
+		return false
+	}
+}
+
+func isEmptyAssistantContentValue(message map[string]any) bool {
+	role, _ := message["role"].(string)
+	if role != "assistant" {
+		return false
+	}
+	content, ok := message["content"].([]any)
+	return ok && len(content) == 0
 }

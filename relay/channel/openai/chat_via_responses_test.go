@@ -70,6 +70,36 @@ func TestOaiResponsesToChatStreamHandlerEmitsClaudeStopForTextOnly(t *testing.T)
 	}
 }
 
+func TestOaiResponsesToChatStreamHandlerDropsReasoningSummaryForClaude(t *testing.T) {
+	oldStreamingTimeout := appconstant.StreamingTimeout
+	appconstant.StreamingTimeout = 30
+	defer func() {
+		appconstant.StreamingTimeout = oldStreamingTimeout
+	}()
+
+	w, c, info := newClaudeResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":123,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"hidden reasoning"}`,
+		`data: {"type":"response.reasoning_summary_text.done"}`,
+		`data: {"type":"response.output_text.delta","delta":"Visible answer."}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Visible answer.","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}}`,
+	}, "\n\n") + "\n\n"
+
+	_, err := OaiResponsesToChatStreamHandler(c, info, newResponsesStream(body))
+	if err != nil {
+		t.Fatalf("OaiResponsesToChatStreamHandler returned error: %v", err)
+	}
+
+	got := w.Body.String()
+	if strings.Contains(got, "hidden reasoning") || strings.Contains(got, "thinking_delta") || strings.Contains(got, `"thinking"`) {
+		t.Fatalf("Claude stream leaked OpenAI reasoning as Claude thinking: %s", got)
+	}
+	if !strings.Contains(got, "Visible answer.") {
+		t.Fatalf("Claude stream missing visible answer: %s", got)
+	}
+}
+
 func TestOaiResponsesToChatStreamHandlerPreservesToolCallAfterTextForClaude(t *testing.T) {
 	oldStreamingTimeout := appconstant.StreamingTimeout
 	appconstant.StreamingTimeout = 30
@@ -269,10 +299,10 @@ func newOpenAIResponsesTestContext(t *testing.T) (*httptest.ResponseRecorder, *g
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{
-		IsStream:    false,
-		RelayFormat: types.RelayFormatOpenAI,
+		IsStream:        false,
+		RelayFormat:     types.RelayFormatOpenAI,
 		OriginModelName: "gpt-5.5",
-		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.5"},
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.5"},
 	}
 	return w, c, info
 }
@@ -411,10 +441,10 @@ func TestOaiResponsesStreamToChatHandler_ContextCancelled_Returns504(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 	info := &relaycommon.RelayInfo{
-		IsStream:    false,
-		RelayFormat: types.RelayFormatOpenAI,
+		IsStream:        false,
+		RelayFormat:     types.RelayFormatOpenAI,
 		OriginModelName: "gpt-5.5",
-		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.5"},
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.5"},
 	}
 
 	// cancel before the handler reads anything
