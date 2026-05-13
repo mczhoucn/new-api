@@ -332,6 +332,34 @@ func TestOaiResponsesStreamToChatHandler_BasicText(t *testing.T) {
 	}
 }
 
+func TestOaiResponsesToChatHandler_DetectsSSEBodyWithoutEventStreamHeader(t *testing.T) {
+	w, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Hello "}`,
+		`data: {"type":"response.output_text.delta","delta":"world."}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world.","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}`,
+	}, "\n\n") + "\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	usage, apiErr := OaiResponsesToChatHandler(c, info, resp)
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+	if usage.TotalTokens != 8 {
+		t.Fatalf("expected total_tokens=8, got %d", usage.TotalTokens)
+	}
+	got := w.Body.String()
+	if !strings.Contains(got, `"Hello world."`) {
+		t.Fatalf("expected aggregated text in response, got:\n%s", got)
+	}
+}
+
 func TestOaiResponsesStreamToChatHandler_LengthFinishReason(t *testing.T) {
 	w, c, info := newOpenAIResponsesTestContext(t)
 	body := strings.Join([]string{

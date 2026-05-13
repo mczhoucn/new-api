@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +38,11 @@ func stringDeltaFromPrefix(prev string, next string) string {
 		return next[len(prev):]
 	}
 	return next
+}
+
+func looksLikeResponsesSSEBody(body []byte) bool {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	return bytes.HasPrefix(trimmed, []byte("data:")) || bytes.HasPrefix(trimmed, []byte("event:"))
 }
 
 func applyResponsesUsage(dst *dto.Usage, src *dto.Usage) {
@@ -410,6 +416,10 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+	if looksLikeResponsesSSEBody(body) {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return OaiResponsesStreamToChatHandler(c, info, resp)
 	}
 
 	if err := common.Unmarshal(body, &responsesResp); err != nil {
