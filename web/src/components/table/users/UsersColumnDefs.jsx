@@ -339,6 +339,34 @@ export const getUsersColumns = ({
       render: (text, record) => renderQuotaUsage(text, record, t),
     },
     {
+      title: t('已用订阅额度/总订阅额度'),
+      key: 'subscription_quota',
+      render: (text, record) => {
+        if (!record.has_subscription) return '-';
+        const total = parseInt(record.subscription_amount_total) || 0;
+        const used = parseInt(record.subscription_amount_used) || 0;
+        const percent = total > 0 ? (used / total) * 100 : 0;
+        const display = total === 0
+          ? `${renderQuota(used)} / ∞`
+          : `${renderQuota(used)} / ${renderQuota(total)}`;
+        return (
+          <Tag color='white' shape='circle'>
+            <div className='flex flex-col items-end'>
+              <span className='text-xs leading-none'>{display}</span>
+              {total > 0 && (
+                <Progress
+                  percent={percent}
+                  aria-label='subscription quota usage'
+                  format={() => `${percent.toFixed(0)}%`}
+                  style={{ width: '100%', marginTop: '1px', marginBottom: 0 }}
+                />
+              )}
+            </div>
+          </Tag>
+        );
+      },
+    },
+    {
       title: t('分组'),
       dataIndex: 'group',
       render: (text, record, index) => {

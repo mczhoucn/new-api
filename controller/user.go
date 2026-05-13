@@ -240,6 +240,23 @@ func GetAllUsers(c *gin.Context) {
 		return
 	}
 
+	if len(users) > 0 {
+		userIds := make([]int, len(users))
+		for i, u := range users {
+			userIds[i] = u.Id
+		}
+		quotaMap, _ := model.BatchGetActiveSubscriptionQuota(userIds)
+		if quotaMap != nil {
+			for _, u := range users {
+				if s, ok := quotaMap[u.Id]; ok {
+					u.SubscriptionAmountTotal = s.TotalAmount
+					u.SubscriptionAmountUsed = s.UsedAmount
+					u.HasSubscription = true
+				}
+			}
+		}
+	}
+
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(users)
 

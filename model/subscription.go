@@ -1204,3 +1204,30 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 		return tx.Save(&sub).Error
 	})
 }
+
+type UserSubscriptionQuotaSummary struct {
+	UserId      int   `gorm:"column:user_id"`
+	TotalAmount int64 `gorm:"column:total_amount"`
+	UsedAmount  int64 `gorm:"column:used_amount"`
+}
+
+func BatchGetActiveSubscriptionQuota(userIds []int) (map[int]UserSubscriptionQuotaSummary, error) {
+	if len(userIds) == 0 {
+		return nil, nil
+	}
+	now := common.GetTimestamp()
+	var results []UserSubscriptionQuotaSummary
+	err := DB.Model(&UserSubscription{}).
+		Select("user_id, SUM(amount_total) as total_amount, SUM(amount_used) as used_amount").
+		Where("user_id IN ? AND status = ? AND end_time > ?", userIds, "active", now).
+		Group("user_id").
+		Find(&results).Error
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[int]UserSubscriptionQuotaSummary, len(results))
+	for _, r := range results {
+		m[r.UserId] = r
+	}
+	return m, nil
+}
