@@ -290,6 +290,98 @@ func TestOaiResponsesToChatStreamHandlerErrorsWithoutCompleted(t *testing.T) {
 	}
 }
 
+func TestOaiResponsesToChatStreamHandlerDropsEmptyReadPagesForClaude(t *testing.T) {
+	oldStreamingTimeout := appconstant.StreamingTimeout
+	appconstant.StreamingTimeout = 30
+	defer func() {
+		appconstant.StreamingTimeout = oldStreamingTimeout
+	}()
+
+	w, c, info := newClaudeResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":123,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"gpt-5.5","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/demo.py\",\"limit\":2000,\"offset\":0,\"pages\":\"\"}"}],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}}`,
+	}, "\n\n") + "\n\n"
+
+	_, err := OaiResponsesToChatStreamHandler(c, info, newResponsesStream(body))
+	if err != nil {
+		t.Fatalf("OaiResponsesToChatStreamHandler returned error: %v", err)
+	}
+
+	got := w.Body.String()
+	if strings.Contains(got, `"pages":""`) {
+		t.Fatalf("Claude Read tool input must drop empty pages, got stream:\n%s", got)
+	}
+	if !strings.Contains(got, `\"file_path\":\"/tmp/demo.py\"`) {
+		t.Fatalf("Claude Read tool input lost other arguments, got stream:\n%s", got)
+	}
+}
+
+func TestOaiResponsesStreamToChatHandlerKeepsEmptyReadPagesForOpenAI(t *testing.T) {
+	w, c, info := newOpenAIResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1000,"model":"gpt-5.5","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/demo.py\",\"limit\":2000,\"offset\":0,\"pages\":\"\"}"}],"usage":{"input_tokens":5,"output_tokens":4,"total_tokens":9}}}`,
+	}, "\n\n") + "\n\n"
+
+	_, apiErr := OaiResponsesStreamToChatHandler(c, info, newResponsesStream(body))
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+
+	got := w.Body.String()
+	if !strings.Contains(got, `\"pages\":\"\"`) {
+		t.Fatalf("OpenAI Responses conversion must preserve empty pages, got:\n%s", got)
+	}
+}
+
+func TestOaiResponsesToChatStreamHandlerKeepsEmptyPagesForOtherClaudeTools(t *testing.T) {
+	oldStreamingTimeout := appconstant.StreamingTimeout
+	appconstant.StreamingTimeout = 30
+	defer func() {
+		appconstant.StreamingTimeout = oldStreamingTimeout
+	}()
+
+	w, c, info := newClaudeResponsesTestContext(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":123,"model":"gpt-5.5"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"gpt-5.5","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"OtherTool","arguments":"{\"pages\":\"\"}"}],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}}`,
+	}, "\n\n") + "\n\n"
+
+	_, err := OaiResponsesToChatStreamHandler(c, info, newResponsesStream(body))
+	if err != nil {
+		t.Fatalf("OaiResponsesToChatStreamHandler returned error: %v", err)
+	}
+
+	got := w.Body.String()
+	if !strings.Contains(got, `\"pages\":\"\"`) {
+		t.Fatalf("non-Read Claude tool input must preserve empty pages, got stream:\n%s", got)
+	}
+}
+
+func TestOaiResponsesToChatHandlerDropsEmptyReadPagesForClaudeJSON(t *testing.T) {
+	w, c, info := newClaudeResponsesTestContext(t)
+	body := `{"id":"resp_1","created_at":123,"model":"gpt-5.5","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/demo.py\",\"limit\":2000,\"offset\":0,\"pages\":\"\"}"}],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	_, err := OaiResponsesToChatHandler(c, info, resp)
+	if err != nil {
+		t.Fatalf("OaiResponsesToChatHandler returned error: %v", err)
+	}
+
+	got := w.Body.String()
+	if strings.Contains(got, `"pages":""`) {
+		t.Fatalf("Claude JSON Read tool input must drop empty pages, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"file_path":"/tmp/demo.py"`) {
+		t.Fatalf("Claude JSON Read tool input lost other arguments, got:\n%s", got)
+	}
+}
+
 // ── OaiResponsesStreamToChatHandler tests ────────────────────────────────────
 
 func newOpenAIResponsesTestContext(t *testing.T) (*httptest.ResponseRecorder, *gin.Context, *relaycommon.RelayInfo) {

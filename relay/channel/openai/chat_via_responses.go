@@ -3,6 +3,7 @@ package openai
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,6 +44,43 @@ func stringDeltaFromPrefix(prev string, next string) string {
 func looksLikeResponsesSSEBody(body []byte) bool {
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	return bytes.HasPrefix(trimmed, []byte("data:")) || bytes.HasPrefix(trimmed, []byte("event:"))
+}
+
+func sanitizeClaudeReadToolArguments(name string, args string) string {
+	if name != "Read" || args == "" {
+		return args
+	}
+
+	var input map[string]json.RawMessage
+	if err := common.Unmarshal(common.StringToByteSlice(args), &input); err != nil {
+		return args
+	}
+	if pages, ok := input["pages"]; !ok || string(pages) != `""` {
+		return args
+	}
+
+	delete(input, "pages")
+	sanitized, err := common.Marshal(input)
+	if err != nil {
+		return args
+	}
+	return string(sanitized)
+}
+
+func sanitizeClaudeReadToolArgumentsInResponsesOutput(outputs []dto.ResponsesOutput) {
+	for i := range outputs {
+		out := &outputs[i]
+		if out.Type != "function_call" || strings.TrimSpace(out.Name) != "Read" {
+			continue
+		}
+		args := out.ArgumentsString()
+		sanitized := sanitizeClaudeReadToolArguments(out.Name, args)
+		if sanitized == args {
+			continue
+		}
+		quoted, _ := common.Marshal(sanitized)
+		out.Arguments = quoted
+	}
 }
 
 func applyResponsesUsage(dst *dto.Usage, src *dto.Usage) {
@@ -367,6 +405,9 @@ func OaiResponsesStreamToChatHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	}
 
+	if info.RelayFormat == types.RelayFormatClaude {
+		sanitizeClaudeReadToolArgumentsInResponsesOutput(responsesResp.Output)
+	}
 	chatResp, usage, err := service.ResponsesResponseToChatCompletionsResponse(responsesResp, chatID)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -431,6 +472,9 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	chatId := helper.GetResponseID(c)
+	if info.RelayFormat == types.RelayFormatClaude {
+		sanitizeClaudeReadToolArgumentsInResponsesOutput(responsesResp.Output)
+	}
 	chatResp, usage, err := service.ResponsesResponseToChatCompletionsResponse(&responsesResp, chatId)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -629,6 +673,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 		if toolCallNameByID[callID] != "" {
 			name = toolCallNameByID[callID]
+		}
+		if info.RelayFormat == types.RelayFormatClaude && name == "Read" && argsDelta != "" {
+			argsDelta = sanitizeClaudeReadToolArguments(name, argsDelta)
 		}
 
 		tool := dto.ToolCallResponse{
