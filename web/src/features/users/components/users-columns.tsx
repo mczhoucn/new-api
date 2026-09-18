@@ -45,6 +45,7 @@ import {
 import type { User } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 import { UserQuotaCell } from './user-quota-cell'
+import { UserSubscriptionQuotaCell } from './user-subscription-quota-cell'
 
 export function useUsersColumns(): ColumnDef<User>[] {
   const { t } = useTranslation()
@@ -193,6 +194,23 @@ export function useUsersColumns(): ColumnDef<User>[] {
         size: 180,
         minSize: 160,
         meta: { mobileOrder: 40 },
+      },
+      {
+        id: 'subscription_quota',
+        header: `${t('Subscription')} ${t('Total Quota')} (${quotaUnit})`,
+        cell: ({ row }) => {
+          const user = row.original
+          return (
+            <UserSubscriptionQuotaCell
+              hasSubscription={user.has_subscription}
+              total={user.subscription_amount_total}
+              used={user.subscription_amount_used}
+            />
+          )
+        },
+        size: 200,
+        minSize: 180,
+        meta: { mobileHidden: true },
       },
       {
         accessorKey: 'group',

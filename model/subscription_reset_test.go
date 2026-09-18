@@ -199,3 +199,26 @@ func TestAdminResetPlanSubscriptionsNoMatchSucceeds(t *testing.T) {
 	assert.Zero(t, result.UserCount)
 	assert.Empty(t, result.AffectedUserIds)
 }
+
+func TestBatchGetActiveSubscriptionQuotaAggregatesOnlyActiveSubscriptions(t *testing.T) {
+	truncateTables(t)
+
+	now := GetDBTimestamp()
+	activeEnd := now + 3600
+	seedSubscriptionResetSub(t, &UserSubscription{Id: 9701, UserId: 1001, AmountTotal: 1000, AmountUsed: 400, StartTime: now - 100, EndTime: activeEnd, Status: "active"})
+	seedSubscriptionResetSub(t, &UserSubscription{Id: 9702, UserId: 1001, AmountTotal: 2000, AmountUsed: 800, StartTime: now - 100, EndTime: activeEnd, Status: "active"})
+	seedSubscriptionResetSub(t, &UserSubscription{Id: 9703, UserId: 1002, AmountTotal: 0, AmountUsed: 50, StartTime: now - 100, EndTime: activeEnd, Status: "active"})
+	seedSubscriptionResetSub(t, &UserSubscription{Id: 9704, UserId: 1003, AmountTotal: 9000, AmountUsed: 900, StartTime: now - 100, EndTime: now - 1, Status: "active"})
+	seedSubscriptionResetSub(t, &UserSubscription{Id: 9705, UserId: 1004, AmountTotal: 9000, AmountUsed: 900, StartTime: now - 100, EndTime: activeEnd, Status: "cancelled"})
+
+	quotas, err := BatchGetActiveSubscriptionQuota([]int{1001, 1002, 1003, 1004})
+
+	require.NoError(t, err)
+	require.Len(t, quotas, 2)
+	assert.Equal(t, UserSubscriptionQuotaSummary{UserId: 1001, TotalAmount: 3000, UsedAmount: 1200}, quotas[1001])
+	assert.Equal(t, UserSubscriptionQuotaSummary{UserId: 1002, TotalAmount: 0, UsedAmount: 50}, quotas[1002])
+	_, found := quotas[1003]
+	assert.False(t, found)
+	_, found = quotas[1004]
+	assert.False(t, found)
+}

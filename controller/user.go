@@ -334,11 +334,43 @@ func Register(c *gin.Context) {
 	return
 }
 
+func attachActiveSubscriptionQuota(users []*model.User) error {
+	if len(users) == 0 {
+		return nil
+	}
+
+	userIds := make([]int, 0, len(users))
+	for _, user := range users {
+		if user != nil && user.Id > 0 {
+			userIds = append(userIds, user.Id)
+		}
+	}
+	quotas, err := model.BatchGetActiveSubscriptionQuota(userIds)
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		if user == nil {
+			continue
+		}
+		if quota, ok := quotas[user.Id]; ok {
+			user.SubscriptionAmountTotal = quota.TotalAmount
+			user.SubscriptionAmountUsed = quota.UsedAmount
+			user.HasSubscription = true
+		}
+	}
+	return nil
+}
+
 func GetAllUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
 	users, total, err := model.GetAllUsers(pageInfo, sortOptions)
 	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := attachActiveSubscriptionQuota(users); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -369,6 +401,10 @@ func SearchUsers(c *gin.Context) {
 	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
 	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
 	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := attachActiveSubscriptionQuota(users); err != nil {
 		common.ApiError(c, err)
 		return
 	}

@@ -112,6 +112,12 @@ type User struct {
 	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+
+	// Active subscription quota is populated for admin user-list responses and is
+	// intentionally not persisted with the user row.
+	SubscriptionAmountTotal int64 `json:"subscription_amount_total" gorm:"-"`
+	SubscriptionAmountUsed  int64 `json:"subscription_amount_used" gorm:"-"`
+	HasSubscription         bool  `json:"has_subscription" gorm:"-"`
 }
 
 func (user *User) ToBaseUser() *UserBase {

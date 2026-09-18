@@ -280,6 +280,38 @@ type UserSubscription struct {
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
 
+type UserSubscriptionQuotaSummary struct {
+	UserId      int   `gorm:"column:user_id"`
+	TotalAmount int64 `gorm:"column:total_amount"`
+	UsedAmount  int64 `gorm:"column:used_amount"`
+}
+
+// BatchGetActiveSubscriptionQuota returns the aggregate quota of each user's
+// currently active subscriptions. A total of zero means the active subscription
+// has unlimited quota, so the presence of a map entry must be preserved.
+func BatchGetActiveSubscriptionQuota(userIds []int) (map[int]UserSubscriptionQuotaSummary, error) {
+	if len(userIds) == 0 {
+		return map[int]UserSubscriptionQuotaSummary{}, nil
+	}
+
+	now := GetDBTimestamp()
+	var results []UserSubscriptionQuotaSummary
+	err := DB.Model(&UserSubscription{}).
+		Select("user_id, SUM(amount_total) AS total_amount, SUM(amount_used) AS used_amount").
+		Where("user_id IN ? AND status = ? AND end_time > ?", userIds, "active", now).
+		Group("user_id").
+		Find(&results).Error
+	if err != nil {
+		return nil, err
+	}
+
+	quotas := make(map[int]UserSubscriptionQuotaSummary, len(results))
+	for _, result := range results {
+		quotas[result.UserId] = result
+	}
+	return quotas, nil
+}
+
 func (s *UserSubscription) BeforeCreate(tx *gorm.DB) error {
 	now := common.GetTimestamp()
 	s.CreatedAt = now
