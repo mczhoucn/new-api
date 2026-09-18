@@ -303,6 +303,8 @@ const SENSITIVE_FORM_FIELDS = [
   'responses_websocket_enabled',
   'system_prompt',
   'system_prompt_override',
+  'sensitive_check_enabled',
+  'sensitive_words',
   'allow_service_tier',
   'disable_store',
   'allow_safety_identifier',
@@ -1864,6 +1866,58 @@ export function ChannelMutateDrawer({
     />
   )
 
+  const sensitiveWordFields = (
+    <div className='border-border/60 space-y-4 border-t pt-4'>
+      <FormField
+        control={form.control}
+        name='sensitive_check_enabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-3'>
+            <div className='space-y-0.5'>
+              <FormLabel>{t('Sensitive word filtering')}</FormLabel>
+              <FormDescription>
+                {t(
+                  'Only applies to the current channel; matching requests are rejected without retrying another channel'
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                disabled={sensitiveLocked}
+                checked={field.value === true}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
+        name='sensitive_words'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{t('Sensitive word list')}</FormLabel>
+            <FormControl>
+              <Textarea
+                rows={5}
+                placeholder={t('One sensitive word per line')}
+                disabled={sensitiveLocked || isSubmitting}
+                {...field}
+              />
+            </FormControl>
+            <FormDescription>
+              {t(
+                'When enabled, user prompts are checked against the line-based word list'
+              )}
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+    </div>
+  )
+
   const passthroughFields = (
     <FormField
       control={form.control}
@@ -2255,10 +2309,7 @@ export function ChannelMutateDrawer({
               </FormDescription>
             </div>
             <FormControl>
-              <Switch
-                checked={field.value}
-                onCheckedChange={field.onChange}
-              />
+              <Switch checked={field.value} onCheckedChange={field.onChange} />
             </FormControl>
           </FormItem>
         )}
@@ -4708,6 +4759,7 @@ export function ChannelMutateDrawer({
                   passthroughFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}
+                {sensitiveWordFields}
               </fieldset>
             </div>
             {fieldPassthroughFields}

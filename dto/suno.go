@@ -2,6 +2,7 @@ package dto
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 type SunoSubmitReq struct {
@@ -14,6 +15,21 @@ type SunoSubmitReq struct {
 	TaskID               string  `json:"task_id,omitempty"`
 	ContinueClipId       string  `json:"continue_clip_id,omitempty"`
 	MakeInstrumental     bool    `json:"make_instrumental"`
+}
+
+// GetPrompt lets task-level policy checks cover both Suno prompt fields.
+func (r *SunoSubmitReq) GetPrompt() string {
+	if r == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if strings.TrimSpace(r.Prompt) != "" {
+		parts = append(parts, r.Prompt)
+	}
+	if strings.TrimSpace(r.GptDescriptionPrompt) != "" {
+		parts = append(parts, r.GptDescriptionPrompt)
+	}
+	return strings.Join(parts, "\n")
 }
 
 type SunoDataResponse struct {

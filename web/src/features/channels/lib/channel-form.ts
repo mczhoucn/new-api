@@ -274,6 +274,8 @@ export const channelFormSchema = z
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
+    sensitive_check_enabled: z.boolean().optional(),
+    sensitive_words: z.string().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -467,6 +469,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   responses_websocket_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
+  sensitive_check_enabled: false,
+  sensitive_words: '',
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -511,6 +515,8 @@ export function transformChannelToFormDefaults(
     responses_websocket_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    sensitive_check_enabled: false,
+    sensitive_words: '',
   }
 
   if (channel.setting) {
@@ -533,6 +539,10 @@ export function transformChannelToFormDefaults(
           parsed.responses_websocket_enabled === true,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        sensitive_check_enabled: parsed.sensitive_check_enabled === true,
+        sensitive_words: Array.isArray(parsed.sensitive_words)
+          ? parsed.sensitive_words.join('\n')
+          : '',
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -644,6 +654,13 @@ export function transformChannelToFormDefaults(
   }
 }
 
+export function parseSensitiveWords(value: string | undefined): string[] {
+  return String(value || '')
+    .split('\n')
+    .map((word) => word.trim())
+    .filter(Boolean)
+}
+
 /**
  * Build the setting JSON string from form extra settings
  */
@@ -669,6 +686,14 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       formData.responses_websocket_enabled === true,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+  }
+
+  const sensitiveWords = parseSensitiveWords(formData.sensitive_words)
+  if (formData.sensitive_check_enabled === true) {
+    settingObj.sensitive_check_enabled = true
+  }
+  if (sensitiveWords.length > 0) {
+    settingObj.sensitive_words = sensitiveWords
   }
 
   const protocol = normalizeHttpProtocol(formData.http_protocol)

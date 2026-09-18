@@ -36,16 +36,45 @@ func CheckSensitiveText(text string) (bool, []string) {
 	return SensitiveWordContains(text)
 }
 
+// CheckSensitiveTextWithWords checks text against an explicit word list.
+// Channel-level filters use this instead of the process-wide setting so that
+// each selected channel can apply its own policy without changing global state.
+func CheckSensitiveTextWithWords(text string, words []string) (bool, []string) {
+	return SensitiveWordContainsWithWords(text, words)
+}
+
+func normalizeSensitiveWords(words []string) []string {
+	if len(words) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(words))
+	seen := make(map[string]struct{}, len(words))
+	for _, word := range words {
+		word = strings.TrimSpace(word)
+		if word == "" {
+			continue
+		}
+		if _, ok := seen[word]; ok {
+			continue
+		}
+		seen[word] = struct{}{}
+		normalized = append(normalized, word)
+	}
+	return normalized
+}
+
 // SensitiveWordContains 是否包含敏感词，返回是否包含敏感词和敏感词列表
 func SensitiveWordContains(text string) (bool, []string) {
-	if len(setting.SensitiveWords) == 0 {
+	return SensitiveWordContainsWithWords(text, setting.SensitiveWords)
+}
+
+// SensitiveWordContainsWithWords 使用指定词表检查文本是否包含敏感词。
+func SensitiveWordContainsWithWords(text string, words []string) (bool, []string) {
+	words = normalizeSensitiveWords(words)
+	if len(words) == 0 || len(text) == 0 {
 		return false, nil
 	}
-	if len(text) == 0 {
-		return false, nil
-	}
-	checkText := strings.ToLower(text)
-	return AcSearch(checkText, setting.SensitiveWords, true)
+	return AcSearch(strings.ToLower(text), words, true)
 }
 
 // SensitiveWordReplace 敏感词替换，返回是否包含敏感词和替换后的文本

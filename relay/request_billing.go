@@ -40,30 +40,69 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		}
 	}
 
-	if needSensitiveCheck && meta != nil {
-		if contains, words := service.CheckSensitiveText(meta.CombineText); contains {
-			service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorCode: string(types.ErrorCodeSensitiveWordsDetected), ErrorSource: "local", Decision: service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "global"}, Health: "unchanged"})
-			message := fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", "))
-			logger.LogWarn(c, message)
-			return types.NewError(errors.New(message), types.ErrorCodeSensitiveWordsDetected)
-		}
-	}
-
 	tokens, err := service.EstimateRequestToken(c, meta, info)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeCountTokenFailed)
 	}
 	info.SetEstimatePromptTokens(tokens)
 
+	return PrepareBillingForAttempt(c, info, tokens, meta)
+}
+
+// PrepareBillingForAttempt calculates the selected channel's price and
+// reserves only the additional amount needed for this attempt. It is separate
+// from request selection so callers can check channel policy before billing.
+func PrepareBillingForAttempt(c *gin.Context, info *relaycommon.RelayInfo, tokens int, meta *types.TokenCountMeta) *types.NewAPIError {
+	if meta == nil {
+		meta = &types.TokenCountMeta{}
+	}
+
+	if setting.ShouldCheckPromptSensitive() && meta.CombineText != "" {
+		if contains, words := service.CheckSensitiveText(meta.CombineText); contains {
+			service.RequestPolicy(c).AddEvent(service.PolicyEvent{
+				ErrorCode:   string(types.ErrorCodeSensitiveWordsDetected),
+				ErrorSource: "local",
+				Decision:    service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "global"},
+				Health:      "unchanged",
+			})
+			message := fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", "))
+			logger.LogWarn(c, message)
+			return types.NewErrorWithStatusCode(
+				errors.New("sensitive words detected"),
+				types.ErrorCodeSensitiveWordsDetected,
+				http.StatusBadRequest,
+				types.ErrOptionWithSkipRetry(),
+			)
+		}
+	}
+
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 	}
 	if priceData.FreeModel {
+		// Once a billing session exists, keep session semantics even if a retry
+		// lands on a free group; settlement still needs to return the reserve.
+		if info.Billing != nil {
+			info.PriceData.FreeModel = false
+		}
 		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", info.OriginModelName))
 		return nil
 	}
-	return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, info)
+
+	if info.Billing != nil {
+		if err := info.Billing.Reserve(priceData.QuotaToPreConsume); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodePreConsumeTokenQuotaFailed, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		}
+		info.FinalPreConsumedQuota = info.Billing.GetPreConsumedQuota()
+		return nil
+	}
+
+	apiErr := service.PreConsumeBilling(c, priceData.QuotaToPreConsume, info)
+	if apiErr == nil && info.Billing != nil {
+		info.FinalPreConsumedQuota = info.Billing.GetPreConsumedQuota()
+	}
+	return apiErr
 }
 
 // RefundFailedRequestBilling applies the common final-failure policy after all

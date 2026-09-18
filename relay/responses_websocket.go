@@ -229,7 +229,21 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	modelName := create.Request.Model
 	started := time.Now()
 	var info *relaycommon.RelayInfo
+	// Responses WebSocket requests are already decoded, so retain the complete
+	// metadata for both channel filtering and token/media estimation. A new
+	// channel attempt must reuse the same request metadata, not a request-level
+	// reservation created before channel selection.
+	sensitiveMeta := create.Request.GetTokenCountMeta()
 	billingPrepared := false
+	defer service.ReleaseChannelConcurrencyLease(c)
+	prepareAttemptBilling := func() *types.NewAPIError {
+		tokens, err := service.EstimateRequestToken(c, sensitiveMeta, info)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeCountTokenFailed)
+		}
+		info.SetEstimatePromptTokens(tokens)
+		return PrepareBillingForAttempt(c, info, tokens, sensitiveMeta)
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			apiErr = types.NewError(fmt.Errorf("responses websocket call panic: %v", recovered), types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
@@ -266,10 +280,15 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		info = relaycommon.GenRelayInfoResponses(c, &create.Request)
 		info.IsStream = true
 		common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
-		if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
+		if apiErr = CheckChannelSensitiveWords(c, &create.Request, nil, &sensitiveMeta); apiErr != nil {
+			service.ReleaseChannelConcurrencyLease(c)
 			return apiErr
 		}
-		billingPrepared = true
+		if apiErr = prepareAttemptBilling(); apiErr != nil {
+			service.ReleaseChannelConcurrencyLease(c)
+			return apiErr
+		}
+		billingPrepared = info.Billing != nil
 		var payload []byte
 		payload, apiErr = buildResponsesWSCreatePayload(c, info, create.Request, create.Generate, create.StreamID)
 		if apiErr != nil {
@@ -292,16 +311,16 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info = relaycommon.GenRelayInfoResponses(c, &create.Request)
 				info.IsStream = true
 				common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
-				if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
-					return apiErr
-				}
-				billingPrepared = true
-			} else {
-				info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
-				if apiErr = service.PrepareTieredBillingForSelectedGroup(c, info); apiErr != nil {
-					return apiErr
-				}
 			}
+			if apiErr = CheckChannelSensitiveWords(c, &create.Request, channel, &sensitiveMeta); apiErr != nil {
+				service.ReleaseChannelConcurrencyLease(c)
+				return apiErr
+			}
+			if apiErr = prepareAttemptBilling(); apiErr != nil {
+				service.ReleaseChannelConcurrencyLease(c)
+				return apiErr
+			}
+			billingPrepared = billingPrepared || info.Billing != nil
 			info.RetryIndex = retry.GetRetry()
 			policy.BeginAttempt(channel, info.UsingGroup)
 			var payload []byte
@@ -581,6 +600,9 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 		if !appmodel.IsChannelEnabledForGroupModel(group, model, s.lockedChannelID) {
 			return types.NewErrorWithStatusCode(errors.New("the connection channel is no longer allowed for this group and model"), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 		}
+	}
+	if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+		return types.NewErrorWithStatusCode(err, types.ErrorCodeChannelConcurrencyLimitExceeded, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 	}
 	for key, value := range s.lockedContext {
 		c.Set(string(key), value)

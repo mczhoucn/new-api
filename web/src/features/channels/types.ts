@@ -92,6 +92,8 @@ export interface ChannelSettings {
   responses_websocket_enabled?: boolean
   system_prompt?: string
   system_prompt_override?: boolean
+  sensitive_check_enabled?: boolean
+  sensitive_words?: string[]
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
 }

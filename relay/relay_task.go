@@ -21,6 +21,8 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	relaydto "github.com/QuantumNous/new-api/relaykit/dto"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -191,6 +193,106 @@ func ApplyOriginTaskAffinity(c *gin.Context, info *relaycommon.RelayInfo) *dto.T
 	return ApplyChannelPin(c, info)
 }
 
+func taskSensitivePrompt(c *gin.Context) string {
+	request, err := relaycommon.GetTaskRequest(c)
+	if err == nil {
+		return request.Prompt
+	}
+
+	value, ok := c.Get("task_request")
+	if !ok {
+		return ""
+	}
+	if promptRequest, ok := value.(relaycommon.HasPrompt); ok {
+		return promptRequest.GetPrompt()
+	}
+
+	// Built-in task requests and modern JS task plugins may store different
+	// concrete values in the context. Suno's plugin request is a map containing
+	// prompt/gpt_description_prompt (and sometimes title/tags), so do not rely
+	// solely on the legacy HasPrompt interface here.
+	var collect func(any) []string
+	collect = func(value any) []string {
+		switch value := value.(type) {
+		case map[string]any:
+			parts := make([]string, 0, 5)
+			for _, key := range []string{"prompt", "gpt_description_prompt", "title", "tags"} {
+				if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+			}
+			if input, ok := value["input"]; ok {
+				parts = append(parts, collect(input)...)
+			}
+			return parts
+		case []any:
+			parts := make([]string, 0, len(value))
+			for _, item := range value {
+				parts = append(parts, collect(item)...)
+			}
+			return parts
+		case string:
+			if strings.TrimSpace(value) != "" {
+				return []string{value}
+			}
+		}
+		return nil
+	}
+	return strings.Join(collect(value), "\n")
+}
+
+// taskAttemptChannel resolves the channel selected for the current task
+// attempt. The context ID is authoritative for retries; a locked channel is
+// reused only when it still matches that ID. This keeps the sensitive-word
+// fallback tied to the channel actually being submitted to.
+func taskAttemptChannel(c *gin.Context, info *relaycommon.RelayInfo) *model.Channel {
+	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	if info != nil {
+		if channel, ok := info.LockedChannel.(*model.Channel); ok && channel != nil {
+			if channelID == 0 || channel.Id == channelID {
+				return channel
+			}
+		}
+	}
+	if channelID <= 0 {
+		return nil
+	}
+	channel, err := model.CacheGetChannel(channelID)
+	if err != nil {
+		return nil
+	}
+	return channel
+}
+
+// CheckTaskSensitiveWords checks the selected task channel before model
+// mapping, pricing, or pre-consumption. A local rejection is deliberately
+// non-retryable so a prompt cannot move to another channel.
+func CheckTaskSensitiveWords(c *gin.Context, channel *model.Channel) *dto.TaskError {
+	channelSetting, ok := common.GetContextKeyType[relaydto.ChannelSettings](c, constant.ContextKeyChannelSetting)
+	if !ok {
+		channelSetting = relaydto.ChannelSettings{}
+		if channel != nil {
+			channelSetting = channel.GetSetting()
+		}
+	}
+	if !channelSetting.SensitiveCheckEnabled {
+		return nil
+	}
+
+	prompt := taskSensitivePrompt(c)
+	if prompt == "" {
+		return nil
+	}
+	contains, words := service.CheckSensitiveTextWithWords(prompt, channelSetting.SensitiveWords)
+	if !contains {
+		return nil
+	}
+	logger.LogWarn(c, fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", ")))
+	taskErr := service.TaskErrorWrapperLocal(errors.New("sensitive words detected"), string(relaytypes.ErrorCodeSensitiveWordsDetected), http.StatusBadRequest)
+	taskErr.NoRetry = true
+	return taskErr
+}
+
 // RelayTaskSubmit 完成 task 提交的全部流程（每次尝试调用一次）：
 // 刷新渠道元数据 → 确定 platform/adaptor → 验证请求 →
 // 估算计费(EstimateBilling) → 计算价格 → 预扣费（仅首次）→
@@ -229,6 +331,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
+		return nil, taskErr
+	}
+	if taskErr := CheckTaskSensitiveWords(c, taskAttemptChannel(c, info)); taskErr != nil {
 		return nil, taskErr
 	}
 

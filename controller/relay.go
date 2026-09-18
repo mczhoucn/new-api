@@ -22,8 +22,10 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	relaydto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -139,12 +141,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
-		return
+	needCountToken := constant.CountToken || setting.ShouldCheckPromptSensitive()
+	// Avoid building huge CombineText when token counting and both sensitive
+	// checks are disabled. A selected channel may still request a full meta
+	// later, before its attempt is billed.
+	var meta *types.TokenCountMeta
+	if needCountToken {
+		meta = relayInfo.Request.GetTokenCountMeta()
+	} else {
+		meta = fastTokenCountMetaForPricing(relayInfo.Request)
 	}
-	defer func() {
-		newAPIError = relay.RefundFailedRequestBilling(c, relayInfo, newAPIError)
-	}()
+	relayInfo.SetEstimatePromptTokens(0)
 
 	retryParam := &service.RetryParam{
 		Ctx:         c,
@@ -155,6 +162,36 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+
+	tokenState := &relayTokenEstimateState{
+		estimate: func() (int, *types.NewAPIError) {
+			tokens, err := service.EstimateRequestToken(c, meta, relayInfo)
+			if err != nil {
+				return 0, types.NewError(err, types.ErrorCodeCountTokenFailed)
+			}
+			relayInfo.SetEstimatePromptTokens(tokens)
+			return tokens, nil
+		},
+	}
+	billingState := &relayBillingState{
+		prepare: func() *types.NewAPIError {
+			tokens, apiErr := tokenState.estimateOnce()
+			if apiErr != nil {
+				return apiErr
+			}
+			return relay.PrepareBillingForAttempt(c, relayInfo, tokens, meta)
+		},
+	}
+
+	defer func() {
+		// A channel-sensitive rejection happens before a BillingSession exists and
+		// must not trigger a refund or any post-billing failure handling. The
+		// session itself is the source of truth because pricing/Reserve may fail
+		// before the attempt-state marker is set.
+		if newAPIError != nil && relayInfo.Billing != nil {
+			newAPIError = relay.RefundFailedRequestBilling(c, relayInfo, newAPIError)
+		}
+	}()
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
@@ -168,11 +205,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
-		service.AppendUsedChannel(c, channel.Id)
-		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
-			newAPIError = billingErr
+		if sensitiveErr := relay.CheckChannelSensitiveWords(c, request, channel, &meta); sensitiveErr != nil {
+			newAPIError = sensitiveErr
+			service.ReleaseChannelConcurrencyLease(c)
 			break
 		}
+		if billingErr := billingState.preConsumeForAttempt(); billingErr != nil {
+			newAPIError = billingErr
+			service.ReleaseChannelConcurrencyLease(c)
+			break
+		}
+		service.AppendUsedChannel(c, channel.Id)
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
@@ -259,6 +302,71 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // 允许跨域
 	},
+}
+
+type relayTokenEstimateState struct {
+	initialized bool
+	tokens      int
+	apiErr      *types.NewAPIError
+	estimate    func() (int, *types.NewAPIError)
+}
+
+func (s *relayTokenEstimateState) estimateOnce() (int, *types.NewAPIError) {
+	if s == nil {
+		return 0, nil
+	}
+	if s.initialized {
+		return s.tokens, s.apiErr
+	}
+	s.initialized = true
+	if s.estimate == nil {
+		return 0, nil
+	}
+	s.tokens, s.apiErr = s.estimate()
+	return s.tokens, s.apiErr
+}
+
+type relayBillingState struct {
+	initialized bool
+	prepare     func() *types.NewAPIError
+}
+
+func (s *relayBillingState) preConsumeForAttempt() *types.NewAPIError {
+	if s == nil {
+		return nil
+	}
+	s.initialized = true
+	if s.prepare == nil {
+		return nil
+	}
+	return s.prepare()
+}
+
+func fastTokenCountMetaForPricing(request relaydto.Request) *types.TokenCountMeta {
+	if request == nil {
+		return &types.TokenCountMeta{}
+	}
+	meta := &types.TokenCountMeta{TokenType: types.TokenTypeTokenizer}
+	switch request := request.(type) {
+	case *relaydto.GeneralOpenAIRequest:
+		if request.MaxCompletionTokens != nil {
+			meta.MaxTokens = int(*request.MaxCompletionTokens)
+		}
+		if request.MaxTokens != nil && int(*request.MaxTokens) > meta.MaxTokens {
+			meta.MaxTokens = int(*request.MaxTokens)
+		}
+	case *relaydto.OpenAIResponsesRequest:
+		if request.MaxOutputTokens != nil {
+			meta.MaxTokens = int(*request.MaxOutputTokens)
+		}
+	case *relaydto.ClaudeRequest:
+		if request.MaxTokens != nil {
+			meta.MaxTokens = int(*request.MaxTokens)
+		}
+	case *relaydto.ImageRequest:
+		return request.GetTokenCountMeta()
+	}
+	return meta
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
@@ -487,6 +595,11 @@ func executeTaskSubmissionWith(
 	submit taskSubmitAttempt,
 ) (*taskSubmissionOutcome, *taskdto.TaskError) {
 	policy := service.RequestPolicy(c)
+	// A task attempt holds one channel lease while its upstream submission is
+	// running. Release it on every terminal path, including local sensitive-word
+	// rejection and persistence failures; the distributor's defer is only a
+	// safety net for requests that entered through that middleware.
+	defer service.ReleaseChannelConcurrencyLease(c)
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	diagnostics.start(relayInfo)
 	var result *relay.TaskSubmitResult
@@ -521,21 +634,11 @@ func executeTaskSubmissionWith(
 			break
 		}
 		var channel *model.Channel
-
-		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
-			channel = lockedCh
-			if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
-				taskErr = service.TaskErrorWrapperLocal(err, string(types.ErrorCodeChannelConcurrencyLimitExceeded), http.StatusTooManyRequests)
-				break
-			}
-			policy.BeginAttempt(channel, relayInfo.UsingGroup)
-			if retryParam.GetRetry() > 0 {
-				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
-					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
-					break
-				}
-			}
-		} else {
+		channel, taskErr = setupLockedTaskChannelForAttempt(c, relayInfo)
+		if taskErr != nil {
+			break
+		}
+		if channel == nil {
 			var channelErr *types.NewAPIError
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
@@ -783,6 +886,28 @@ func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 		return
 	}
 	respondTaskError(c, taskErr)
+}
+
+// setupLockedTaskChannelForAttempt refreshes the locked channel context on
+// every attempt, including the first one. This ensures channel-scoped policy
+// settings are current before RelayTaskSubmit validates or bills the request.
+func setupLockedTaskChannelForAttempt(c *gin.Context, relayInfo *relaycommon.RelayInfo) (*model.Channel, *taskdto.TaskError) {
+	if relayInfo == nil {
+		return nil, nil
+	}
+	channel, ok := relayInfo.LockedChannel.(*model.Channel)
+	if !ok || channel == nil {
+		return nil, nil
+	}
+	if err := service.AcquireChannelConcurrencyLease(c, channel); err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, string(types.ErrorCodeChannelConcurrencyLimitExceeded), http.StatusTooManyRequests)
+	}
+	if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+		service.ReleaseChannelConcurrencyLease(c)
+		return nil, service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
+	}
+	service.RequestPolicy(c).BeginAttempt(channel, relayInfo.UsingGroup)
+	return channel, nil
 }
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）

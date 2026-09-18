@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { cleanup, render, screen } from '@testing-library/react'
 import { createInstance } from 'i18next'
-import { afterEach, beforeEach, expect, it } from 'vitest'
 import { I18nextProvider } from 'react-i18next'
+import { afterEach, beforeEach, expect, it } from 'vitest'
 
 import {
   DEFAULT_CURRENCY_CONFIG,
@@ -68,16 +68,13 @@ it('renders no subscription without a quota popover', () => {
 it('renders finite subscription usage with a bounded progress bar', () => {
   renderCell({ hasSubscription: true, total: 1_000_000, used: 250_000 })
 
-  expect(screen.getByText('0.5 / 2')).toBeInTheDocument()
-  expect(screen.getByRole('progressbar')).toHaveAttribute(
-    'aria-valuenow',
-    '25'
-  )
+  expect(screen.getByText('$0.5 / $2')).toBeInTheDocument()
+  expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25')
 })
 
 it('renders zero-total subscriptions as unlimited without progress', () => {
   renderCell({ hasSubscription: true, total: 0, used: 250_000 })
 
-  expect(screen.getByText('0.5 / Unlimited')).toBeInTheDocument()
+  expect(screen.getByText('$0.5 / Unlimited')).toBeInTheDocument()
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
 })
