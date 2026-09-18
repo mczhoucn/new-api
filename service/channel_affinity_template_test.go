@@ -267,6 +267,104 @@ func TestClearCurrentChannelAffinityCache(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, found)
 	require.False(t, ShouldSkipRetryAfterChannelAffinityFailure(ctx))
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	originalSwitchOnSuccess := setting.SwitchOnSuccess
+	setting.SwitchOnSuccess = false
+	t.Cleanup(func() { setting.SwitchOnSuccess = originalSwitchOnSuccess })
+	ctx.Set("channel_id", 22)
+	RecordChannelAffinity(ctx, 11)
+	channelID, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, 22, channelID)
+}
+
+func TestChannelAffinityRecoveryClearPrefixesDropsModelSegmentWhenRuleIncludesModel(t *testing.T) {
+	rules := []operation_setting.ChannelAffinityRule{
+		{
+			Name:              "rule-a",
+			ModelRegex:        []string{"^gpt-.*$"},
+			IncludeRuleName:   true,
+			IncludeModelName:  true,
+			IncludeUsingGroup: true,
+		},
+		{
+			Name:              "rule-b",
+			ModelRegex:        []string{"^claude-.*$"},
+			IncludeRuleName:   true,
+			IncludeModelName:  true,
+			IncludeUsingGroup: true,
+		},
+	}
+	channel := &model.Channel{Id: 123, Models: "gpt-5,claude-3", Group: "default,pro"}
+
+	prefixes, fullClear := channelAffinityRecoveryClearPrefixes(rules, channel)
+
+	require.False(t, fullClear)
+	require.ElementsMatch(t, []string{"rule-a", "rule-b"}, prefixes)
+}
+
+func TestClearChannelAffinityCacheForRecoveredChannelClearsRecoveredRulePrefixesWithoutModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	originalEnabled := setting.Enabled
+	originalRules := setting.Rules
+	setting.Enabled = true
+	setting.Rules = []operation_setting.ChannelAffinityRule{
+		{
+			Name:              "recovered-rule",
+			ModelRegex:        []string{"^gpt-.*$"},
+			IncludeRuleName:   true,
+			IncludeModelName:  true,
+			IncludeUsingGroup: true,
+		},
+		{
+			Name:              "other-rule",
+			ModelRegex:        []string{"^claude-.*$"},
+			IncludeRuleName:   true,
+			IncludeModelName:  true,
+			IncludeUsingGroup: true,
+		},
+	}
+	t.Cleanup(func() {
+		setting.Enabled = originalEnabled
+		setting.Rules = originalRules
+	})
+
+	cache := getChannelAffinityCache()
+	keys := []string{
+		"recovered-rule:gpt-5:default:key1",
+		"recovered-rule:gpt-5:pro:key2",
+		"recovered-rule:gpt-4:default:key3",
+		"other-rule:claude-3:default:key4",
+		"recovered-rule:gpt-5:auto:key5",
+		"recovered-rule:gemini-2.5-pro-thinking-8192:default:key6",
+	}
+	for i, key := range keys {
+		require.NoError(t, cache.SetWithTTL(key, i+1, time.Minute))
+	}
+	t.Cleanup(func() { _, _ = cache.DeleteMany(keys) })
+
+	deleted := ClearChannelAffinityCacheForRecoveredChannel(&model.Channel{
+		Id: 321, Models: "gpt-5,gemini-2.5-pro-thinking-*", Group: "default",
+	})
+	require.Equal(t, 5, deleted)
+	for _, key := range []string{
+		"recovered-rule:gpt-5:default:key1",
+		"recovered-rule:gpt-5:pro:key2",
+		"recovered-rule:gpt-4:default:key3",
+		"recovered-rule:gpt-5:auto:key5",
+		"recovered-rule:gemini-2.5-pro-thinking-8192:default:key6",
+	} {
+		_, found, err := cache.Get(key)
+		require.NoError(t, err)
+		require.False(t, found, key)
+	}
+	_, found, err := cache.Get("other-rule:claude-3:default:key4")
+	require.NoError(t, err)
+	require.True(t, found)
 }
 
 func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
