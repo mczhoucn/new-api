@@ -29,8 +29,10 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/gin-gonic/gin"
 )
@@ -439,6 +441,19 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 
+	// Channel tests for Anthropic-compatible relays use the identity shape sent by
+	// Claude Code rather than a generic OpenAI-style metadata payload.
+	if info.IsChannelTest && apiType == constant.APITypeAnthropic {
+		jsonData, err = applyClaudeCodeChannelTestIdentity(jsonData, info, uuid.New().String())
+		if err != nil {
+			return testResult{
+				context:     c,
+				localErr:    err,
+				newAPIError: types.NewError(err, types.ErrorCodeJsonMarshalFailed),
+			}
+		}
+	}
+
 	//jsonData, err = relaycommon.RemoveDisabledFields(jsonData, info.ChannelOtherSettings)
 	//if err != nil {
 	//	return testResult{
@@ -506,7 +521,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: respErr,
 		}
 	}
-	usage, usageErr := coerceTestUsage(usageA, isStream, info.GetEstimatePromptTokens())
+	effectiveIsStream := info.IsStream
+	usage, usageErr := coerceTestUsage(usageA, effectiveIsStream, info.GetEstimatePromptTokens())
 	if usageErr != nil {
 		return testResult{
 			context:     c,
@@ -515,7 +531,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, isStream)
+	respBody, err := readTestResponseBody(result.Body, effectiveIsStream)
 	if err != nil {
 		return testResult{
 			context:     c,
@@ -523,7 +539,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError),
 		}
 	}
-	if bodyErr := validateTestResponseBody(respBody, isStream); bodyErr != nil {
+	if bodyErr := validateTestResponseBody(respBody, effectiveIsStream); bodyErr != nil {
 		return testResult{
 			context:     c,
 			localErr:    bodyErr,
@@ -556,6 +572,33 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		localErr:    nil,
 		newAPIError: nil,
 	}
+}
+
+func applyClaudeCodeChannelTestIdentity(jsonData []byte, info *relaycommon.RelayInfo, sessionID string) ([]byte, error) {
+	if info != nil {
+		info.IsClaudeBetaQuery = true
+	}
+	return injectClaudeCodeTestMetadata(jsonData, sessionID)
+}
+
+func injectClaudeCodeTestMetadata(jsonData []byte, sessionID string) ([]byte, error) {
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+	}
+	metadataUserID := map[string]string{
+		"device_id":    newClaudeCodeTestDeviceID(),
+		"account_uuid": "",
+		"session_id":   sessionID,
+	}
+	metadataUserIDBytes, err := common.Marshal(metadataUserID)
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetBytes(jsonData, "metadata.user_id", string(metadataUserIDBytes))
+}
+
+func newClaudeCodeTestDeviceID() string {
+	return strings.ReplaceAll(uuid.New().String(), "-", "") + strings.ReplaceAll(uuid.New().String(), "-", "")
 }
 
 func attachTestBillingRequestInput(info *relaycommon.RelayInfo, request dto.Request) error {
@@ -700,8 +743,20 @@ func validateTestResponseBody(respBody []byte, isStream bool) error {
 	return nil
 }
 
-func shouldUseStreamForAutomaticChannelTest(channel *model.Channel) bool {
-	return channel != nil && channel.Type == constant.ChannelTypeCodex
+func defaultChannelTestStream() bool {
+	return true
+}
+
+func parseChannelTestStream(c *gin.Context) bool {
+	streamValue, ok := c.GetQuery("stream")
+	if !ok {
+		return defaultChannelTestStream()
+	}
+	isStream, err := strconv.ParseBool(streamValue)
+	if err != nil {
+		return false
+	}
+	return isStream
 }
 
 func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
@@ -907,7 +962,7 @@ func TestChannel(c *gin.Context) {
 	//}()
 	testModel := c.Query("model")
 	endpointType := c.Query("endpoint_type")
-	isStream, _ := strconv.ParseBool(c.Query("stream"))
+	isStream := parseChannelTestStream(c)
 	testUserID, err := resolveChannelTestUserID(c)
 	if err != nil {
 		common.ApiError(c, err)
@@ -965,7 +1020,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	summary := channelTestSummary{}
 	isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 	tik := time.Now()
-	result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+	result := testChannel(ctx, channel, testUserID, "", "", defaultChannelTestStream())
 	milliseconds := time.Since(tik).Milliseconds()
 	if ctx.Err() != nil {
 		return summary
@@ -999,8 +1054,10 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	}
 
 	if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-		service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
-		summary.Enabled++
+		if service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name) {
+			service.ClearChannelAffinityCacheForRecoveredChannel(channel)
+			summary.Enabled++
+		}
 	}
 
 	channel.UpdateResponseTime(milliseconds)

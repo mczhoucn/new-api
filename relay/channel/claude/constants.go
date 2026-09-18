@@ -43,3 +43,7 @@ var ModelList = []string{
 }
 
 var ChannelName = "claude"
+
+// claudeCliTestUserAgent identifies channel-test requests as Claude Code CLI
+// traffic for compatible Anthropic relays.
+const claudeCliTestUserAgent = "claude-cli/2.1.178 (external, sdk-cli)"

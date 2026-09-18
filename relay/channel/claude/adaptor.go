@@ -112,6 +112,13 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	}
 	req.Set("anthropic-version", anthropicVersion)
 	CommonClaudeHeadersOperation(c, req, info)
+	if info.IsChannelTest {
+		req.Set("User-Agent", claudeCliTestUserAgent)
+	} else if info.RelayFormat == types.RelayFormatClaude && c != nil && c.Request != nil {
+		if clientUA := c.Request.Header.Get("User-Agent"); clientUA != "" {
+			req.Set("User-Agent", clientUA)
+		}
+	}
 	return nil
 }
 

@@ -202,6 +202,66 @@ func TestNormalizeChannelTestEndpointDoesNotOverrideExplicitEndpoint(t *testing.
 	require.Equal(t, string(constant.EndpointTypeOpenAI), endpoint)
 }
 
+func TestParseChannelTestStreamDefaultsToEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/test/1", nil)
+
+	require.True(t, parseChannelTestStream(ctx))
+}
+
+func TestParseChannelTestStreamCanDisableExplicitly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/test/1?stream=false", nil)
+
+	require.False(t, parseChannelTestStream(ctx))
+}
+
+func TestBuildTestRequestPreservesExplicitStreamFalse(t *testing.T) {
+	request := buildTestRequest("gpt-4o-mini", "", &model.Channel{Type: constant.ChannelTypeOpenAI}, false)
+
+	payload, err := common.Marshal(request)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"model":"gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`, string(payload))
+}
+
+func TestApplyClaudeCodeChannelTestIdentityInjectsMetadataUserID(t *testing.T) {
+	info := &relaycommon.RelayInfo{}
+	payload, err := applyClaudeCodeChannelTestIdentity([]byte(`{"model":"claude-sonnet-4-6"}`), info, "session-123")
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, common.Unmarshal(payload, &body))
+	metadata, ok := body["metadata"].(map[string]any)
+	require.True(t, ok)
+	metadataUserID, ok := metadata["user_id"].(string)
+	require.True(t, ok)
+	require.NotContains(t, metadata, "session_id")
+
+	var userID map[string]string
+	require.NoError(t, common.Unmarshal([]byte(metadataUserID), &userID))
+	require.Equal(t, "session-123", userID["session_id"])
+	require.Equal(t, "", userID["account_uuid"])
+	require.Len(t, userID["device_id"], 64)
+	require.True(t, info.IsClaudeBetaQuery)
+}
+
+func TestApplyClaudeCodeChannelTestIdentityPreservesExistingMetadata(t *testing.T) {
+	payload, err := applyClaudeCodeChannelTestIdentity([]byte(`{"metadata":{"user_id":"old","other":"keep"}}`), nil, "session-123")
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, common.Unmarshal(payload, &body))
+	metadata := body["metadata"].(map[string]any)
+	require.Equal(t, "keep", metadata["other"])
+	require.NotEqual(t, "old", metadata["user_id"])
+}
+
+func TestDefaultChannelTestStreamEnabledForAllChannels(t *testing.T) {
+	require.True(t, defaultChannelTestStream())
+}
+
 func TestMultiprotocolGatewayEndpointTypes(t *testing.T) {
 	want := []constant.EndpointType{
 		constant.EndpointTypeOpenAI,
