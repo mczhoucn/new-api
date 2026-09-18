@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -325,6 +326,98 @@ func TestBuildOpenAIStyleUsageFromClaudeUsageDefaultsAggregateCacheCreationTo5m(
 
 	require.Equal(t, 50, openAIUsage.ClaudeCacheCreation5mTokens)
 	require.Equal(t, 0, openAIUsage.ClaudeCacheCreation1hTokens)
+}
+
+func TestOpenAIChatRequestToClaudeMessages_FileContentUsesClaudeDocumentSemantics(t *testing.T) {
+	tests := []struct {
+		name       string
+		fileName   string
+		wantType   string
+		wantText   string
+		wantMime   string
+		wantBase64 string
+	}{
+		{
+			name:       "pdf",
+			fileName:   "report.pdf",
+			wantType:   "document",
+			wantMime:   "application/pdf",
+			wantBase64: "aGVsbG8=",
+		},
+		{
+			name:     "plain text",
+			fileName: "notes.txt",
+			wantType: "text",
+			wantText: "hello",
+		},
+		{
+			name:     "unsupported",
+			fileName: "archive.zip",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := dto.GeneralOpenAIRequest{
+				Model:     "claude-test",
+				MaxTokens: commonPointer[uint](1024),
+				Messages: []dto.Message{{
+					Role: "user",
+					Content: []any{dto.MediaContent{
+						Type: dto.ContentTypeFile,
+						File: &dto.MessageFile{
+							FileName: tt.fileName,
+							FileData: "aGVsbG8=",
+						},
+					}},
+				}},
+			}
+
+			converted, err := relayconvert.OpenAIChatRequestToClaudeMessages(context.Background(), &relaycommon.RelayInfo{}, request)
+			require.NoError(t, err)
+			require.Len(t, converted.Messages, 1)
+			content, err := converted.Messages[0].ParseContent()
+			require.NoError(t, err)
+			if tt.wantType == "" {
+				require.Empty(t, content)
+				return
+			}
+
+			require.Len(t, content, 1)
+			assert.Equal(t, tt.wantType, content[0].Type)
+			if tt.wantText != "" {
+				assert.Equal(t, tt.wantText, content[0].GetText())
+			}
+			if tt.wantMime != "" {
+				require.NotNil(t, content[0].Source)
+				assert.Equal(t, tt.wantMime, content[0].Source.MediaType)
+				assert.Equal(t, tt.wantBase64, content[0].Source.Data)
+			}
+		})
+	}
+}
+
+func TestOpenAIChatRequestToClaudeMessages_FileContentKeepsTextAndSkipsUnsupported(t *testing.T) {
+	request := dto.GeneralOpenAIRequest{
+		Model:     "claude-test",
+		MaxTokens: commonPointer[uint](1024),
+		Messages: []dto.Message{{
+			Role: "user",
+			Content: []any{
+				dto.MediaContent{Type: dto.ContentTypeText, Text: "before"},
+				dto.MediaContent{Type: dto.ContentTypeFile, File: &dto.MessageFile{FileName: "unknown.bin", FileData: "aGVsbG8="}},
+				dto.MediaContent{Type: dto.ContentTypeText, Text: "after"},
+			},
+		}},
+	}
+
+	converted, err := relayconvert.OpenAIChatRequestToClaudeMessages(context.Background(), &relaycommon.RelayInfo{}, request)
+	require.NoError(t, err)
+	content, err := converted.Messages[0].ParseContent()
+	require.NoError(t, err)
+	require.Len(t, content, 2)
+	assert.Equal(t, "before", content[0].GetText())
+	assert.Equal(t, "after", content[1].GetText())
 }
 
 func applyOpenAIChatReasoningThroughHandlerOrder(t *testing.T, original dto.GeneralOpenAIRequest) (*dto.GeneralOpenAIRequest, *relaycommon.RelayInfo) {

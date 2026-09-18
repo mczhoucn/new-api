@@ -557,7 +557,7 @@ func TestStreamScannerHandler_StreamStatus_InitializedIfNil(t *testing.T) {
 	assert.NotNil(t, info.StreamStatus)
 }
 
-func TestStreamScannerHandler_StreamStatus_ReplacesPreInitialized(t *testing.T) {
+func TestStreamScannerHandler_StreamStatus_PreservesPreInitialized(t *testing.T) {
 	t.Parallel()
 
 	body := buildSSEBody(5)
@@ -569,7 +569,7 @@ func TestStreamScannerHandler_StreamStatus_ReplacesPreInitialized(t *testing.T) 
 	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
 
 	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
-	assert.Equal(t, 0, info.StreamStatus.TotalErrorCount())
+	assert.Equal(t, 1, info.StreamStatus.TotalErrorCount())
 }
 
 func TestNewStreamScannerCallerLimit(t *testing.T) {

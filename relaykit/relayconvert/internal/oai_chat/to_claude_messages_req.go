@@ -1,10 +1,11 @@
 package oaichat
 
 import (
-	"fmt"
-	"strings"
-
 	"context"
+	"encoding/base64"
+	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
@@ -13,7 +14,68 @@ import (
 	sharedclaude "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/claude"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
+
+func createClaudeFileSource(file *dto.MessageFile) types.FileSource {
+	if file == nil || file.FileData == "" {
+		return nil
+	}
+	if strings.HasPrefix(file.FileData, "http://") || strings.HasPrefix(file.FileData, "https://") {
+		return types.NewURLFileSource(file.FileData)
+	}
+	return types.NewBase64FileSource(file.FileData, claudeFileMimeType(file.FileName))
+}
+
+func claudeFileMimeType(fileName string) string {
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
+	switch ext {
+	case "txt", "md", "markdown", "csv", "json", "xml", "html", "htm":
+		return "text/plain"
+	case "pdf":
+		return "application/pdf"
+	default:
+		return ""
+	}
+}
+
+func buildClaudeFileMessage(c context.Context, file *dto.MessageFile) (*dto.ClaudeMediaMessage, error) {
+	source := createClaudeFileSource(file)
+	if source == nil {
+		return nil, nil
+	}
+	base64Data, mimeType, err := relaymedia.ResolveBase64Data(c, source, "formatting document for Claude")
+	if err != nil {
+		return nil, fmt.Errorf("get file data failed: %w", err)
+	}
+	mimeType = strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0]))
+	if mimeType == "" {
+		mimeType = claudeFileMimeType(file.FileName)
+	}
+	switch mimeType {
+	case "application/pdf":
+		return &dto.ClaudeMediaMessage{
+			Type: "document",
+			Source: &dto.ClaudeMessageSource{
+				Type:      "base64",
+				MediaType: mimeType,
+				Data:      base64Data,
+			},
+		}, nil
+	case "text/plain":
+		decodedData, err := base64.StdEncoding.DecodeString(base64Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode text file data failed: %w", err)
+		}
+		return &dto.ClaudeMediaMessage{
+			Type: "text",
+			Text: kitutil.GetPointer(string(decodedData)),
+		}, nil
+	default:
+		kitutil.LogInfo(fmt.Sprintf("claude: skip unsupported file content, filename=%q, mime=%q", file.FileName, mimeType))
+		return nil, nil
+	}
+}
 
 func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, textRequest dto.GeneralOpenAIRequest) (*dto.ClaudeRequest, error) {
 	opts := convmeta.OptionsOf(info)
@@ -260,6 +322,14 @@ func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, te
 							Text: kitutil.GetPointer[string](mediaMessage.Text),
 						})
 					}
+				case dto.ContentTypeFile:
+					claudeFileMessage, err := buildClaudeFileMessage(c, mediaMessage.GetFile())
+					if err != nil {
+						return nil, err
+					}
+					if claudeFileMessage != nil {
+						claudeMediaMessages = append(claudeMediaMessages, *claudeFileMessage)
+					}
 				default:
 					source := mediaMessage.ToFileSource()
 					if source == nil {
@@ -279,7 +349,6 @@ func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, te
 					} else {
 						claudeMediaMessage.Type = "image"
 					}
-
 					claudeMediaMessage.Source.MediaType = mimeType
 					claudeMediaMessage.Source.Data = base64Data
 					claudeMediaMessages = append(claudeMediaMessages, claudeMediaMessage)
