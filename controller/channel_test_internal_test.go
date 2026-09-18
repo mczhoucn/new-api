@@ -16,6 +16,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -145,6 +146,60 @@ func TestResponsesCompactChannelSupport(t *testing.T) {
 			assert.Equal(t, test.want, common.SupportsResponsesCompact(test.channelType, test.apiType))
 		})
 	}
+}
+
+func TestNormalizeChannelTestEndpointUsesResponsesPolicyForAutoDetection(t *testing.T) {
+	original := model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy
+	model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{
+		Enabled:       true,
+		AllChannels:   false,
+		ChannelIDs:    []int{2},
+		ModelPatterns: []string{`^gpt-5\.(4|5)(-.+)?$`},
+	}
+	t.Cleanup(func() {
+		model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = original
+	})
+
+	endpoint := normalizeChannelTestEndpoint(&model.Channel{
+		Id:   2,
+		Type: constant.ChannelTypeOpenAI,
+	}, "gpt-5.5-high", "")
+
+	require.Equal(t, string(constant.EndpointTypeOpenAIResponse), endpoint)
+}
+
+func TestNormalizeChannelTestEndpointUsesResponseOnlyModelList(t *testing.T) {
+	original := model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy
+	model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{}
+	t.Cleanup(func() {
+		model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = original
+	})
+
+	endpoint := normalizeChannelTestEndpoint(&model.Channel{
+		Id:   2,
+		Type: constant.ChannelTypeOpenAI,
+	}, "o3-pro", "")
+
+	require.Equal(t, string(constant.EndpointTypeOpenAIResponse), endpoint)
+}
+
+func TestNormalizeChannelTestEndpointDoesNotOverrideExplicitEndpoint(t *testing.T) {
+	original := model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy
+	model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{
+		Enabled:       true,
+		AllChannels:   true,
+		ModelPatterns: []string{`^gpt-5\.`},
+	}
+	t.Cleanup(func() {
+		model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = original
+	})
+
+	endpoint := normalizeChannelTestEndpoint(&model.Channel{
+		Id:   2,
+		Type: constant.ChannelTypeOpenAI,
+	}, "gpt-5.5", string(constant.EndpointTypeOpenAI))
+
+	require.Equal(t, string(constant.EndpointTypeOpenAI), endpoint)
 }
 
 func TestMultiprotocolGatewayEndpointTypes(t *testing.T) {
