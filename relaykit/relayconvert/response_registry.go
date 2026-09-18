@@ -82,6 +82,10 @@ type ResponseStreamOptions struct {
 	// It is explicit so relaykit callers that depend on the historical zero-value
 	// output are not changed merely by upgrading the module.
 	EmitSequenceNumber bool
+
+	// finalTarget lets composite-route step states apply compatibility rules
+	// only when the final client protocol requires them.
+	finalTarget types.RelayFormat
 }
 
 type conversionDiagnosticKey struct {
@@ -581,6 +585,7 @@ func newResponseStreamStateFromSpec(from types.RelayFormat, target types.RelayFo
 	if err != nil {
 		return nil, err
 	}
+	options.finalTarget = target
 	stepStates := make([]any, len(steps))
 	resultSteps := make([]ResponseStep, 0, len(steps))
 	for i, step := range steps {
@@ -965,6 +970,9 @@ func finalizeOAIChatStreamResponseToOAIResponses(_ context.Context, _ convmeta.M
 
 func newOAIResponsesToOAIChatStreamState(options ResponseStreamOptions) any {
 	state := NewResponsesToChatStreamState(strings.TrimSpace(options.Model), options.IncludeUsage)
+	if options.finalTarget == types.RelayFormatClaude {
+		state.EnableClaudeReadToolCompatibility()
+	}
 	state.ID = strings.TrimSpace(options.ID)
 	if options.Created != 0 {
 		state.Created = options.Created

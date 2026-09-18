@@ -18,33 +18,38 @@ type ResponsesToChatStreamState struct {
 
 	Usage *dto.Usage
 
-	sentStart                  bool
-	finalized                  bool
-	hasSentText                bool
-	sentAnnotationCount        int
-	sawToolCall                bool
-	hasSentReasoning           bool
-	needsReasoningSummaryBreak bool
-	nextToolIndex              int
-	toolByKey                  map[string]*responsesStreamTool
-	outputIndexToKey           map[int]string
-	itemIDToKey                map[string]string
-	callIDToKey                map[string]string
-	pendingArgsByOutputIndex   map[int]string
-	pendingArgsByItemID        map[string]string
-	usageText                  strings.Builder
+	sentStart                   bool
+	finalized                   bool
+	hasSentText                 bool
+	sentAnnotationCount         int
+	sawToolCall                 bool
+	hasSentReasoning            bool
+	needsReasoningSummaryBreak  bool
+	nextToolIndex               int
+	toolByKey                   map[string]*responsesStreamTool
+	outputIndexToKey            map[int]string
+	itemIDToKey                 map[string]string
+	callIDToKey                 map[string]string
+	pendingArgsByOutputIndex    map[int]string
+	pendingArgsByItemID         map[string]string
+	usageText                   strings.Builder
+	claudeReadToolCompatibility bool
 }
 
 type responsesStreamTool struct {
-	Key        string
-	CallID     string
-	ItemID     string
-	Name       string
-	Arguments  string
-	Index      int
-	Sent       bool
-	NameSent   bool
-	ArgsSentAt int
+	Key              string
+	CallID           string
+	ItemID           string
+	Type             string
+	Name             string
+	Arguments        string
+	FinalArguments   string
+	Index            int
+	Sent             bool
+	NameSent         bool
+	ArgsSentAt       int
+	ArgumentsFinal   bool
+	ArgumentsFlushed bool
 }
 
 func NewResponsesToChatStreamState(model string, includeUsage bool) *ResponsesToChatStreamState {
@@ -59,6 +64,12 @@ func NewResponsesToChatStreamState(model string, includeUsage bool) *ResponsesTo
 		callIDToKey:              make(map[string]string),
 		pendingArgsByOutputIndex: make(map[int]string),
 		pendingArgsByItemID:      make(map[string]string),
+	}
+}
+
+func (s *ResponsesToChatStreamState) EnableClaudeReadToolCompatibility() {
+	if s != nil {
+		s.claudeReadToolCompatibility = true
 	}
 }
 
@@ -215,7 +226,10 @@ func (s *ResponsesToChatStreamState) terminalOutputChunks(response *dto.OpenAIRe
 		case out.Type == responsesOutputTypeReasoning && !hadSentReasoning:
 			chunks = append(chunks, s.reasoningDelta(reasoningOutputText(out))...)
 		case isResponsesToolOutputType(out.Type):
-			chunks = append(chunks, s.toolItem(&dto.ResponsesStreamResponse{Item: out})...)
+			chunks = append(chunks, s.toolItem(&dto.ResponsesStreamResponse{
+				Type: responsesEventOutputItemDone,
+				Item: out,
+			})...)
 		}
 	}
 	return chunks, nil
@@ -310,7 +324,16 @@ func (s *ResponsesToChatStreamState) toolItem(event *dto.ResponsesStreamResponse
 		return nil
 	}
 	args := event.Item.ArgumentsString()
-	if args != "" {
+	if event.Type == responsesEventOutputItemDone {
+		tool.ArgumentsFinal = true
+		if args != "" {
+			if s.shouldDeferToolArguments(tool) {
+				tool.FinalArguments = args
+			} else {
+				tool.Arguments = args
+			}
+		}
+	} else if args != "" {
 		tool.Arguments = args
 	}
 	return s.toolDelta(tool, "")
@@ -340,6 +363,19 @@ func (s *ResponsesToChatStreamState) flushPendingTool(event *dto.ResponsesStream
 	}
 	if tool == nil {
 		return nil
+	}
+	if s.shouldDeferToolArguments(tool) {
+		tool.ArgumentsFinal = true
+		finalArguments := ""
+		if event.Arguments != nil {
+			finalArguments = *event.Arguments
+		}
+		if finalArguments == "" {
+			finalArguments = event.Delta
+		}
+		if finalArguments != "" {
+			tool.FinalArguments = finalArguments
+		}
 	}
 	return s.toolDelta(tool, "")
 }
@@ -403,6 +439,9 @@ func (s *ResponsesToChatStreamState) ensureToolForEvent(event *dto.ResponsesStre
 	}
 	if name := strings.TrimSpace(event.Item.Name); name != "" {
 		tool.Name = name
+	}
+	if itemType := strings.TrimSpace(event.Item.Type); itemType != "" {
+		tool.Type = itemType
 	}
 	return tool
 }
@@ -471,13 +510,41 @@ func (s *ResponsesToChatStreamState) ensureFallbackToolForEvent(event *dto.Respo
 	return tool
 }
 
+func (s *ResponsesToChatStreamState) shouldDeferToolArguments(tool *responsesStreamTool) bool {
+	if s == nil || tool == nil || !s.claudeReadToolCompatibility {
+		return false
+	}
+	name := strings.TrimSpace(tool.Name)
+	if tool.Type == "" {
+		return true
+	}
+	return tool.Type == responsesOutputTypeFunctionCall && (name == "" || name == claudeReadToolName)
+}
+
+func (s *ResponsesToChatStreamState) finalizedToolArguments(tool *responsesStreamTool) string {
+	if tool == nil {
+		return ""
+	}
+	arguments := ChooseClaudeReadToolArguments(tool.Name, tool.FinalArguments, tool.Arguments)
+	if tool.Name == claudeReadToolName && arguments == "{}" {
+		return ""
+	}
+	return arguments
+}
+
 func (s *ResponsesToChatStreamState) toolDelta(tool *responsesStreamTool, explicitDelta string) []dto.ChatCompletionsStreamResponse {
 	if tool == nil {
 		return nil
 	}
 
 	argsDelta := explicitDelta
-	if argsDelta == "" && len(tool.Arguments) > tool.ArgsSentAt {
+	if s.shouldDeferToolArguments(tool) {
+		argsDelta = ""
+		if tool.ArgumentsFinal && !tool.ArgumentsFlushed {
+			argsDelta = s.finalizedToolArguments(tool)
+			tool.ArgumentsFlushed = true
+		}
+	} else if argsDelta == "" && len(tool.Arguments) > tool.ArgsSentAt {
 		argsDelta = tool.Arguments[tool.ArgsSentAt:]
 	}
 	if tool.Sent && argsDelta == "" && (tool.Name == "" || tool.NameSent) {
@@ -505,7 +572,11 @@ func (s *ResponsesToChatStreamState) toolDelta(tool *responsesStreamTool, explic
 		tool.Sent = true
 	}
 	if argsDelta != "" {
-		tool.ArgsSentAt += len(argsDelta)
+		if s.shouldDeferToolArguments(tool) {
+			tool.ArgsSentAt = len(tool.Arguments)
+		} else {
+			tool.ArgsSentAt += len(argsDelta)
+		}
 		s.usageText.WriteString(argsDelta)
 	}
 	if responseTool.Function.Name != "" {
@@ -598,6 +669,9 @@ func (s *ResponsesToChatStreamState) flushAllPendingTools() []dto.ChatCompletion
 			itemID := after
 			tool.Arguments += s.pendingArgsByItemID[itemID]
 			delete(s.pendingArgsByItemID, itemID)
+		}
+		if s.shouldDeferToolArguments(tool) {
+			tool.ArgumentsFinal = true
 		}
 		chunks = append(chunks, s.toolDelta(tool, "")...)
 	}

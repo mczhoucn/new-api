@@ -28,17 +28,20 @@ type ResponsesToClaudeStreamState struct {
 }
 
 type responsesClaudeStreamBlock struct {
-	Index               int
-	Kind                string
-	ItemID              string
-	CallID              string
-	Name                string
-	Started             bool
-	Stopped             bool
-	Value               strings.Builder
-	SentBytes           int
-	AnnotationCount     int
-	NeedsReasoningBreak bool
+	Index                int
+	Kind                 string
+	ItemID               string
+	CallID               string
+	Name                 string
+	Started              bool
+	Stopped              bool
+	Value                strings.Builder
+	SentBytes            int
+	AnnotationCount      int
+	NeedsReasoningBreak  bool
+	FinalToolArguments   string
+	ToolArgumentsFinal   bool
+	ToolArgumentsFlushed bool
 }
 
 func NewResponsesToClaudeStreamState(id string, model string) *ResponsesToClaudeStreamState {
@@ -148,7 +151,7 @@ func (s *ResponsesToClaudeStreamState) ConvertChunk(event *dto.ResponsesStreamRe
 		if err != nil {
 			return nil, s.Usage, err
 		}
-		return s.appendDelta(block, event.Delta, estimatedInputTokens), s.Usage, nil
+		return s.appendToolDelta(block, event.Delta, estimatedInputTokens), s.Usage, nil
 	case responsesEventFunctionArgsDone, responsesEventCustomToolInputDone:
 		block, err := s.ensureBlock(event, "tool_use")
 		if err != nil {
@@ -157,7 +160,7 @@ func (s *ResponsesToClaudeStreamState) ConvertChunk(event *dto.ResponsesStreamRe
 		if event.Arguments == nil {
 			return nil, s.Usage, nil
 		}
-		return s.mergeFinalValue(block, *event.Arguments, estimatedInputTokens), s.Usage, nil
+		return s.mergeToolFinalValue(block, *event.Arguments, estimatedInputTokens), s.Usage, nil
 	case responsesEventCompleted, responsesEventDone, responsesEventIncomplete:
 		responses, err := s.finish(event.Response, estimatedInputTokens)
 		return responses, s.Usage, err
@@ -316,6 +319,56 @@ func (s *ResponsesToClaudeStreamState) appendDelta(block *responsesClaudeStreamB
 	return s.flushBlock(block, estimatedInputTokens)
 }
 
+func (s *ResponsesToClaudeStreamState) shouldDeferToolArguments(block *responsesClaudeStreamBlock) bool {
+	if block == nil || block.Kind != "tool_use" {
+		return false
+	}
+	name := strings.TrimSpace(block.Name)
+	return name == "" || name == claudeReadToolName
+}
+
+func (s *ResponsesToClaudeStreamState) appendToolDelta(block *responsesClaudeStreamBlock, delta string, estimatedInputTokens int) []*dto.ClaudeResponse {
+	if block == nil || block.Stopped || delta == "" {
+		return nil
+	}
+	block.Value.WriteString(delta)
+	if s.shouldDeferToolArguments(block) {
+		return s.startBlock(block, estimatedInputTokens)
+	}
+	return s.flushBlock(block, estimatedInputTokens)
+}
+
+func (s *ResponsesToClaudeStreamState) mergeToolFinalValue(block *responsesClaudeStreamBlock, finalValue string, estimatedInputTokens int) []*dto.ClaudeResponse {
+	if block == nil || block.Stopped {
+		return nil
+	}
+	if !s.shouldDeferToolArguments(block) {
+		return s.mergeFinalValue(block, finalValue, estimatedInputTokens)
+	}
+	block.ToolArgumentsFinal = true
+	if finalValue != "" {
+		block.FinalToolArguments = finalValue
+	}
+	return s.flushDeferredToolArguments(block, estimatedInputTokens)
+}
+
+func (s *ResponsesToClaudeStreamState) flushDeferredToolArguments(block *responsesClaudeStreamBlock, estimatedInputTokens int) []*dto.ClaudeResponse {
+	if block == nil || block.Stopped || block.ToolArgumentsFlushed {
+		return nil
+	}
+	if strings.TrimSpace(block.Name) == "" || !block.ToolArgumentsFinal {
+		return s.startBlock(block, estimatedInputTokens)
+	}
+	arguments := ChooseClaudeReadToolArguments(block.Name, block.FinalToolArguments, block.Value.String())
+	if strings.TrimSpace(block.Name) == claudeReadToolName && arguments == "{}" {
+		arguments = ""
+	}
+	block.Value.Reset()
+	block.Value.WriteString(arguments)
+	block.ToolArgumentsFlushed = true
+	return s.flushBlock(block, estimatedInputTokens)
+}
+
 func (s *ResponsesToClaudeStreamState) mergeFinalValue(block *responsesClaudeStreamBlock, finalValue string, estimatedInputTokens int) []*dto.ClaudeResponse {
 	if block == nil || block.Stopped {
 		return nil
@@ -415,7 +468,13 @@ func (s *ResponsesToClaudeStreamState) applyOutputItem(event *dto.ResponsesStrea
 		responses = append(responses, s.mergeFinalValue(block, text.String(), estimatedInputTokens)...)
 		responses = append(responses, s.appendAnnotations(block, annotations, estimatedInputTokens, true)...)
 	case "tool_use":
-		responses = append(responses, s.mergeFinalValue(block, item.ArgumentsString(), estimatedInputTokens)...)
+		if stop {
+			responses = append(responses, s.mergeToolFinalValue(block, item.ArgumentsString(), estimatedInputTokens)...)
+		} else if arguments := item.ArgumentsString(); arguments != "" {
+			responses = append(responses, s.appendToolDelta(block, arguments, estimatedInputTokens)...)
+		} else {
+			responses = append(responses, s.startBlock(block, estimatedInputTokens)...)
+		}
 	}
 	if stop {
 		responses = append(responses, s.stopBlock(block, estimatedInputTokens)...)
@@ -472,6 +531,10 @@ func (s *ResponsesToClaudeStreamState) finish(response *dto.OpenAIResponsesRespo
 		}
 	}
 	for _, block := range s.blocks {
+		if s.shouldDeferToolArguments(block) && !block.ToolArgumentsFinal {
+			block.ToolArgumentsFinal = true
+			responses = append(responses, s.flushDeferredToolArguments(block, estimatedInputTokens)...)
+		}
 		responses = append(responses, s.stopBlock(block, estimatedInputTokens)...)
 	}
 	responses = append(responses, s.ensureMessageStart(estimatedInputTokens)...)

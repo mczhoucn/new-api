@@ -278,3 +278,151 @@ func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {
 		offset += idx + len(part)
 	}
 }
+
+func claudeToolInputFromStream(t *testing.T, stream string, callID string) map[string]any {
+	t.Helper()
+
+	var toolIndex any
+	var partial strings.Builder
+	for _, line := range strings.Split(stream, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event map[string]any
+		if err := common.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			continue
+		}
+		switch event["type"] {
+		case "content_block_start":
+			block, ok := event["content_block"].(map[string]any)
+			if ok && block["type"] == "tool_use" && block["id"] == callID {
+				toolIndex = event["index"]
+			}
+		case "content_block_delta":
+			if toolIndex == nil || event["index"] != toolIndex {
+				continue
+			}
+			delta, ok := event["delta"].(map[string]any)
+			if !ok || delta["type"] != "input_json_delta" {
+				continue
+			}
+			if value, ok := delta["partial_json"].(string); ok {
+				partial.WriteString(value)
+			}
+		}
+	}
+	require.NotNil(t, toolIndex, "missing Claude tool_use %s in stream:\n%s", callID, stream)
+
+	input := make(map[string]any)
+	if partial.Len() > 0 {
+		require.NoError(t, common.Unmarshal([]byte(partial.String()), &input), "invalid tool input %q", partial.String())
+	}
+	return input
+}
+
+func TestOaiResponsesToChatStreamHandlerSanitizesSplitClaudeReadArguments(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":123,"model":"gpt-test"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"file_path\":\"/tmp/demo.py\",\"limit\":2000"}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":",\"offset\":0,\"pa"}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"ges\":\"\"}"}`,
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc_1"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":123,"model":"gpt-test","status":"completed","output":[],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	info.RelayFormat = types.RelayFormatClaude
+	_, err := OaiResponsesToChatStreamHandler(c, info, resp)
+	require.Nil(t, err)
+
+	got := recorder.Body.String()
+	input := claudeToolInputFromStream(t, got, "call_1")
+	assert.Equal(t, "/tmp/demo.py", input["file_path"])
+	assert.Equal(t, float64(2000), input["limit"])
+	assert.Equal(t, float64(0), input["offset"])
+	assert.NotContains(t, input, "pages")
+	assert.NotContains(t, got, `\"pages\":\"\"`)
+	inputDeltaIndex := strings.Index(got, `"type":"input_json_delta"`)
+	blockStopIndex := strings.Index(got, "event: content_block_stop")
+	messageStopIndex := strings.Index(got, "event: message_stop")
+	assert.True(t,
+		inputDeltaIndex >= 0 && inputDeltaIndex < blockStopIndex && blockStopIndex < messageStopIndex,
+		"sanitized input must be emitted before stream termination: %s",
+		got,
+	)
+}
+
+func TestOaiResponsesToChatStreamHandlerSanitizesCompletedClaudeReadArguments(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/demo.py\",\"pages\":\"\"}"}],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	info.RelayFormat = types.RelayFormatClaude
+	_, err := OaiResponsesToChatStreamHandler(c, info, resp)
+	require.Nil(t, err)
+
+	input := claudeToolInputFromStream(t, recorder.Body.String(), "call_1")
+	assert.Equal(t, "/tmp/demo.py", input["file_path"])
+	assert.NotContains(t, input, "pages")
+}
+
+func TestOaiResponsesToChatStreamHandlerPreservesReadPagesForOpenAI(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"file_path\":\"/tmp/demo.py\",\"pages\":\"\"}"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	_, err := OaiResponsesToChatStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `\"pages\":\"\"`)
+}
+
+func TestOaiResponsesToChatHandlerSanitizesClaudeReadArguments(t *testing.T) {
+	body := `{"id":"resp_1","created_at":123,"model":"gpt-test","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/demo.py\",\"pages\":\"\"}"}],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}`
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+	info.RelayFormat = types.RelayFormatClaude
+	resp.Header.Set("Content-Type", "application/json")
+
+	_, err := OaiResponsesToChatHandler(c, info, resp)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `"file_path":"/tmp/demo.py"`)
+	assert.NotContains(t, recorder.Body.String(), `"pages":""`)
+}
+
+func TestOaiResponsesToChatBufferedStreamHandlerSanitizesClaudeReadArguments(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"response.done","response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/demo.py\",\"pages\":\"\"}"}],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+	info.RelayFormat = types.RelayFormatClaude
+
+	_, err := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `"file_path":"/tmp/demo.py"`)
+	assert.NotContains(t, recorder.Body.String(), `"pages":""`)
+}

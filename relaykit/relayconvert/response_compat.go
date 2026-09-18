@@ -193,6 +193,14 @@ func ExtractReasoningTextFromResponses(resp *dto.OpenAIResponsesResponse) string
 	return oairesponses.ExtractReasoningTextFromResponses(resp)
 }
 
+func SanitizeClaudeReadToolArguments(name string, arguments string) string {
+	return oairesponses.SanitizeClaudeReadToolArguments(name, arguments)
+}
+
+func SanitizeClaudeReadToolArgumentsInResponsesOutput(outputs []dto.ResponsesOutput) {
+	oairesponses.SanitizeClaudeReadToolArgumentsInResponsesOutput(outputs)
+}
+
 func NewResponsesToChatStreamState(model string, includeUsage bool) *ResponsesToChatStreamState {
 	return oairesponses.NewResponsesToChatStreamState(model, includeUsage)
 }

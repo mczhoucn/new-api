@@ -56,11 +56,15 @@ func ResponsesResponseToClaudeMessagesResponse(resp *dto.OpenAIResponsesResponse
 			if callID == "" {
 				callID = strings.TrimSpace(output.ID)
 			}
+			arguments := output.ArgumentsString()
+			if output.Type == responsesOutputTypeFunctionCall {
+				arguments = SanitizeClaudeReadToolArguments(output.Name, arguments)
+			}
 			claudeResponse.Content = append(claudeResponse.Content, dto.ClaudeMediaMessage{
 				Type:  "tool_use",
 				Id:    callID,
 				Name:  output.Name,
-				Input: responsesArgumentsToClaudeInput(output.ArgumentsString()),
+				Input: responsesArgumentsToClaudeInput(arguments),
 			})
 		}
 	}

@@ -20,6 +20,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func stripResponsesReasoningOutput(response *dto.OpenAIResponsesResponse) {
+	if response == nil || len(response.Output) == 0 {
+		return
+	}
+	filtered := response.Output[:0]
+	for _, output := range response.Output {
+		if output.Type != "reasoning" {
+			filtered = append(filtered, output)
+		}
+	}
+	response.Output = filtered
+}
+
 func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -39,6 +52,10 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	if oaiError := responsesResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+	if info != nil && info.RelayFormat == types.RelayFormatClaude {
+		stripResponsesReasoningOutput(&responsesResp)
+		relayconvert.SanitizeClaudeReadToolArgumentsInResponsesOutput(responsesResp.Output)
 	}
 
 	info.ObserveResponseModel(responsesResp.Model)
@@ -133,6 +150,9 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		}
 	}
 	accumulator.SupplementResponseOutput(finalResponse)
+	if info != nil && info.RelayFormat == types.RelayFormatClaude {
+		relayconvert.SanitizeClaudeReadToolArgumentsInResponsesOutput(finalResponse.Output)
+	}
 
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, finalResponse)
 	if err != nil {
