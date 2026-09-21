@@ -410,99 +410,111 @@ export function useCommonLogsColumns(
               ? `${log.channel_name} #${log.channel}`
               : `#${log.channel}`
             const channelIdDisplay = `#${log.channel}`
-            const channelName = sensitiveVisible ? log.channel_name : '••••'
+            const channelName = sensitiveVisible
+              ? (log.channel_name ?? '')
+              : '••••'
             const multiKeyIndex = other?.admin_info?.multi_key_index
             const showMultiKeyIndex =
               other?.admin_info?.is_multi_key === true &&
               typeof multiKeyIndex === 'number' &&
               Number.isFinite(multiKeyIndex)
+            const affinityButton = affinity ? (
+              <button
+                type='button'
+                aria-label={t('Channel Affinity')}
+                className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full text-amber-500 transition-colors focus-visible:ring-2 focus-visible:outline-none'
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setAffinityTarget({
+                    rule_name: affinity.rule_name || '',
+                    using_group:
+                      affinity.using_group || affinity.selected_group || '',
+                    key_hint: affinity.key_hint || '',
+                    key_fp: affinity.key_fp || '',
+                  })
+                  setAffinityDialogOpen(true)
+                }}
+              >
+                <Sparkles className='size-3 fill-current' />
+              </button>
+            ) : null
 
             return (
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger
                     render={
-                      <div className='flex max-w-[160px] flex-col gap-0.5' />
+                      <div className='flex w-full min-w-0 flex-col gap-0.5' />
                     }
                   >
-                    <div className='relative inline-flex w-fit items-center gap-1'>
-                      <StatusBadge
-                        label={channelIdDisplay}
-                        autoColor={String(log.channel)}
-                        copyText={String(log.channel)}
-                        size='sm'
-                        showDot={false}
-                        className='font-mono'
-                      />
-                      {showMultiKeyIndex && (
+                    <div className='relative flex w-full min-w-0 flex-col items-start gap-0.5'>
+                      {log.channel_name ? (
+                        <div className='flex w-full min-w-0 items-center gap-1'>
+                          <StatusBadge
+                            label={channelName}
+                            autoColor={String(log.channel)}
+                            size='sm'
+                            showDot={false}
+                            copyable={false}
+                            className='w-fit max-w-full min-w-0 !text-sm font-semibold'
+                          />
+                          {affinityButton}
+                        </div>
+                      ) : null}
+                      <div className='flex max-w-full min-w-0 items-center gap-1'>
                         <StatusBadge
-                          label={String(multiKeyIndex)}
+                          label={channelIdDisplay}
+                          copyText={String(log.channel)}
                           size='sm'
                           showDot={false}
-                          copyable={false}
                           variant='neutral'
-                          className='h-5 min-w-5 justify-center rounded-full px-1 font-mono text-xs'
-                          aria-label={`${t('Key')} ${multiKeyIndex}`}
+                          className='text-muted-foreground max-w-full min-w-0 font-mono !text-xs'
                         />
-                      )}
-                      {hasRetryChain && (
-                        <Popover>
-                          <PopoverTrigger
-                            render={
-                              <button
-                                type='button'
-                                className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                                aria-label={t('Retry Chain')}
-                                onClick={(e) => e.stopPropagation()}
+                        {!log.channel_name && affinityButton}
+                        {showMultiKeyIndex && (
+                          <StatusBadge
+                            label={String(multiKeyIndex)}
+                            size='sm'
+                            showDot={false}
+                            copyable={false}
+                            variant='neutral'
+                            className='h-5 min-w-5 justify-center rounded-full px-1 font-mono text-xs'
+                            aria-label={`${t('Key')} ${multiKeyIndex}`}
+                          />
+                        )}
+                        {hasRetryChain && (
+                          <Popover>
+                            <PopoverTrigger
+                              render={
+                                <button
+                                  type='button'
+                                  className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
+                                  aria-label={t('Retry Chain')}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              }
+                            >
+                              <GitBranch
+                                className='size-3.5 text-amber-500'
+                                aria-hidden='true'
                               />
-                            }
-                          >
-                            <GitBranch
-                              className='size-3.5 text-amber-500'
-                              aria-hidden='true'
-                            />
-                          </PopoverTrigger>
-                          <PopoverContent
-                            side='top'
-                            align='start'
-                            className='w-64 text-xs'
-                          >
-                            <div className='flex flex-col gap-1'>
-                              <p className='font-medium'>{t('Retry Chain')}</p>
-                              <p className='text-muted-foreground font-mono break-all'>
-                                {channelChain}
-                              </p>
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                      )}
-                      {affinity && (
-                        <button
-                          type='button'
-                          className='absolute -top-1 -right-1 leading-none text-amber-500'
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setAffinityTarget({
-                              rule_name: affinity.rule_name || '',
-                              using_group:
-                                affinity.using_group ||
-                                affinity.selected_group ||
-                                '',
-                              key_hint: affinity.key_hint || '',
-                              key_fp: affinity.key_fp || '',
-                            })
-                            setAffinityDialogOpen(true)
-                          }}
-                        >
-                          <Sparkles className='size-3 fill-current' />
-                        </button>
-                      )}
+                            </PopoverTrigger>
+                            <PopoverContent
+                              side='top'
+                              align='start'
+                              className='w-64 text-xs'
+                            >
+                              <div className='flex flex-col gap-1'>
+                                <p className='font-medium'>{t('Retry Chain')}</p>
+                                <p className='text-muted-foreground font-mono break-all'>
+                                  {channelChain}
+                                </p>
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                        )}
+                      </div>
                     </div>
-                    {log.channel_name && (
-                      <span className='text-muted-foreground/70 truncate [font-family:var(--font-body)] !text-xs'>
-                        {channelName}
-                      </span>
-                    )}
                   </TooltipTrigger>
                   <TooltipContent>
                     <div className='space-y-1'>
@@ -541,6 +553,9 @@ export function useCommonLogsColumns(
               </TooltipProvider>
             )
           },
+          size: 180,
+          minSize: 140,
+          maxSize: 360,
         },
         {
           id: 'user',

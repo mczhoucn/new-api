@@ -26,6 +26,8 @@ import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 
+import { DataTableView } from '@/components/data-table'
+
 import { usageLogSchema, type UsageLog } from '../../data/schema'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
 import { UsageLogsMobileList } from '../usage-logs-mobile-card'
@@ -96,6 +98,98 @@ function renderLogs(props: Parameters<typeof Fixture>[0] = {}) {
     </QueryClientProvider>
   )
 }
+
+function DesktopFixture(props: { logs?: UsageLog[] }) {
+  const columns = useCommonLogsColumns(true, false)
+  const table = useReactTable({
+    data: props.logs ?? [log],
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    enableColumnResizing: true,
+  })
+
+  return <DataTableView table={table} applyHeaderSize />
+}
+
+function renderDesktopLogs(props: { logs?: UsageLog[] } = {}) {
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <UsageLogsProvider>
+        <DesktopFixture {...props} />
+      </UsageLogsProvider>
+    </QueryClientProvider>
+  )
+}
+
+it('keeps the channel name above the muted ID without overlapping later columns', () => {
+  renderDesktopLogs()
+
+  const channelName = screen
+    .getAllByText(longName)
+    .find((element) => element.closest('[data-column-id="channel"]')) as
+    | HTMLElement
+    | undefined
+  expect(channelName).toBeDefined()
+
+  const channelCell = channelName?.closest<HTMLElement>(
+    '[data-column-id="channel"]'
+  )
+  expect(channelCell).not.toBeNull()
+
+  const badges = channelCell?.querySelectorAll('[data-slot="status-badge"]')
+  expect(badges).toHaveLength(2)
+  expect(badges?.[0]).toHaveClass('w-fit', 'font-semibold', '!text-sm')
+  expect(badges?.[0]).not.toHaveClass('flex-1')
+  expect(badges?.[1]).toHaveClass(
+    'text-muted-foreground',
+    'font-mono',
+    '!text-xs'
+  )
+  expect(badges?.[0]?.parentElement).toHaveClass('items-center')
+  expect(badges?.[0]?.parentElement?.parentElement).toHaveClass('flex-col')
+  expect(badges?.[0]?.parentElement).not.toBe(badges?.[1]?.parentElement)
+  const channelHeader = screen.getByText('Channel').closest('th') as HTMLElement
+  expect(channelHeader).toHaveStyle({
+    width: '180px',
+  })
+  expect(within(channelHeader).getByRole('separator')).toBeVisible()
+})
+
+it('keeps the channel affinity icon beside the channel name', () => {
+  const affinityLog = {
+    ...log,
+    other: JSON.stringify({
+      admin_info: {
+        channel_affinity: {
+          rule_name: 'production-affinity',
+          using_group: 'enterprise-production',
+        },
+      },
+    }),
+  }
+  renderDesktopLogs({ logs: [affinityLog] })
+
+  const channelName = screen
+    .getAllByText(longName)
+    .find((element) => element.closest('[data-column-id="channel"]')) as
+    | HTMLElement
+    | undefined
+  const channelCell = channelName?.closest<HTMLElement>(
+    '[data-column-id="channel"]'
+  )
+  expect(channelCell).not.toBeNull()
+
+  const badges = channelCell?.querySelectorAll('[data-slot="status-badge"]')
+  const affinityButton = within(channelCell as HTMLElement).getByRole(
+    'button',
+    { name: 'Channel Affinity' }
+  )
+  expect(badges?.[0]?.parentElement).toContainElement(affinityButton)
+})
 
 it('shows model mismatch evidence when tapping the mobile model badge', async () => {
   const user = userEvent.setup()

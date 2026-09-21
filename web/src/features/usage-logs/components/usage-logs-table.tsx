@@ -70,6 +70,13 @@ function getColumnVisibilityStorageKey(
   return `usage-logs:${logCategory}:${viewAccess}:column-visibility`
 }
 
+function getColumnSizingStorageKey(
+  logCategory: LogCategory,
+  viewAccess: LogsViewAccess
+): string {
+  return `usage-logs:${logCategory}:${viewAccess}:column-sizing`
+}
+
 function deserializeLogTypeFilter(value: unknown): unknown[] {
   let values: unknown[] = []
   if (Array.isArray(value)) {
@@ -215,8 +222,12 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       logCategory,
       viewAccess
     ),
+    columnSizingStorageKey: isMobile
+      ? false
+      : getColumnSizingStorageKey(logCategory, viewAccess),
     pagination,
     enableRowSelection: false,
+    enableColumnResizing: !isMobile,
     onPaginationChange,
     onColumnFiltersChange,
     manualPagination: true,
