@@ -44,3 +44,7 @@ relaykit/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum
+
+# Local test k8s manifests (do not mix with production k8s/).
+/myk8s/
+

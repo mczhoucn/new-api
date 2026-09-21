@@ -11,3 +11,5 @@ docs
 /web/node_modules
 /web/dist
 !THIRD-PARTY-LICENSES.md
+k8s
+myk8s
