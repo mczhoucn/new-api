@@ -325,9 +325,24 @@ function TagWeightCell({ channel }: { channel: TagRow }) {
   )
 }
 
+export function getConcurrencyVariant(
+  current: number,
+  limit: number
+): StatusBadgeProps['variant'] {
+  if (current >= limit) {
+    return 'danger'
+  }
+  if (current === 0) {
+    return 'neutral'
+  }
+  return limit > 0 && current / limit >= 0.8 ? 'warning' : 'success'
+}
+
 function ConcurrencyCell({ channel }: { channel: Channel }) {
   const { t } = useTranslation()
-  const channels = isTagAggregateRow(channel) ? channel.children || [] : [channel]
+  const channels = isTagAggregateRow(channel)
+    ? channel.children || []
+    : [channel]
   const current = channels.reduce(
     (total, item) => total + (item.current_concurrency ?? 0),
     0
@@ -336,13 +351,7 @@ function ConcurrencyCell({ channel }: { channel: Channel }) {
     (total, item) => total + (item.concurrency_limit ?? 10),
     0
   )
-  const ratio = limit > 0 ? current / limit : 1
-  let variant: StatusBadgeProps['variant'] = 'success'
-  if (current >= limit) {
-    variant = 'danger'
-  } else if (ratio >= 0.8) {
-    variant = 'warning'
-  }
+  const variant = getConcurrencyVariant(current, limit)
 
   return (
     <TooltipProvider>
