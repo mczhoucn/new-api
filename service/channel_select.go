@@ -203,9 +203,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		return nil, selectGroup, lastErr
 	}
 	if channel != nil {
-		if err := AcquireChannelConcurrencyLease(param.Ctx, channel); err != nil {
-			return nil, selectGroup, err
-		}
+		// The model selector atomically reserves the chosen channel. Attach
+		// that reservation to the request instead of acquiring it again.
+		TrackChannelConcurrencyLease(param.Ctx, channel.Id)
 	}
 	return channel, selectGroup, nil
 }
@@ -281,12 +281,24 @@ type ChannelSelectError struct {
 	NoAvailableChannel bool
 }
 
+func ensureSelectedChannelConcurrencyLease(c *gin.Context, channel *model.Channel) *ChannelSelectError {
+	if err := AcquireChannelConcurrencyLease(c, channel); err != nil {
+		return &ChannelSelectError{
+			StatusCode: http.StatusTooManyRequests,
+			Code:       types.ErrorCodeChannelConcurrencyLimitExceeded,
+			Message:    err.Error(),
+		}
+	}
+	return nil
+}
+
 // SelectChannelForRequest resolves the channel for one attempt with the rules
 // shared by the HTTP distributor and the Responses WebSocket relay: a pinned
 // channel wins, then session affinity (first attempt only), then a random
 // eligible channel; every candidate must satisfy the request's channel
-// filters. The group the channel was chosen from is returned for auto-group
-// callers. The caller still applies SetupContextForSelectedChannel.
+// filters. It also reserves the selected channel's concurrency slot. The
+// group the channel was chosen from is returned for auto-group callers. The
+// caller still applies SetupContextForSelectedChannel and releases the slot.
 func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam) (*model.Channel, string, *ChannelSelectError) {
 	constraints := GetChannelConstraints(c)
 	if pin, found, overridden := constraints.ResolvedPin(); found {
@@ -309,6 +321,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
 				FilterKind: kind, Channel: channel,
 			}
+		}
+		if selectErr := ensureSelectedChannelConcurrencyLease(c, channel); selectErr != nil {
+			return nil, "", selectErr
 		}
 		return channel, "", nil
 	}
@@ -377,11 +392,17 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		}
 	}
 	if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
+		if HasChannelConcurrencyLease(c, channel.Id) {
+			ReleaseChannelConcurrencyLease(c)
+		}
 		return nil, selectGroup, &ChannelSelectError{
 			StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
 			Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
 			FilterKind: kind, Channel: channel, NoAvailableChannel: true,
 		}
+	}
+	if selectErr := ensureSelectedChannelConcurrencyLease(c, channel); selectErr != nil {
+		return nil, selectGroup, selectErr
 	}
 	return channel, selectGroup, nil
 }

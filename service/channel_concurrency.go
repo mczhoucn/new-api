@@ -23,6 +23,8 @@ func AcquireChannelConcurrencyLease(c *gin.Context, channel *model.Channel) erro
 	return nil
 }
 
+// TrackChannelConcurrencyLease associates an already acquired reservation
+// with the request context without changing the channel counter.
 func TrackChannelConcurrencyLease(c *gin.Context, channelId int) {
 	if c == nil || channelId <= 0 {
 		return
