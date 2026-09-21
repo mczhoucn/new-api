@@ -27,6 +27,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { resolveModelProvider } from '@/lib/model-provider'
 import { cn } from '@/lib/utils'
@@ -90,18 +96,50 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
   )
 }
 
+function ModelMappingIndicator(props: { model: string }) {
+  const { t } = useTranslation()
+  const label = t('Response model: {{model}}', { model: props.model })
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              role='img'
+              aria-label={label}
+              className='text-muted-foreground inline-flex size-4 shrink-0 items-center justify-center'
+            />
+          }
+        >
+          <Route className='size-3' aria-hidden='true' />
+        </TooltipTrigger>
+        <TooltipContent side='top'>{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 export function ModelBadge(props: ModelBadgeProps) {
   const { t } = useTranslation()
   const mismatch = isResponseModelMismatch(props.responseModel)
+  let responseMappingModel: string | undefined
+  if (mismatch && props.responseModel) {
+    responseMappingModel = props.responseModel.returned_model
+  } else if (
+    props.responseModel?.upstream_model &&
+    props.responseModel.upstream_model !== props.responseModel.requested_model
+  ) {
+    responseMappingModel = props.responseModel.upstream_model
+  }
+  const mappedModel = responseMappingModel || props.actualModel
   const responseModelLabel =
-    mismatch && props.responseModel
-      ? t('Response model: {{model}}', {
-          model: props.responseModel.returned_model,
-        })
+    mismatch && mappedModel
+      ? t('Response model: {{model}}', { model: mappedModel })
       : ''
   const modelLabel = `${t('Model')}: ${props.modelName}${responseModelLabel ? `, ${responseModelLabel}` : ''}`
   const hasDetails =
-    !!props.actualModel ||
+    !!mappedModel ||
     !!(
       props.responseModel &&
       (mismatch ||
@@ -132,20 +170,7 @@ export function ModelBadge(props: ModelBadgeProps) {
   const content = (
     <>
       <ModelBadgeContent {...props} copyable={false} />
-      {mismatch && (
-        <StatusBadge
-          icon={AlertTriangle}
-          label={responseModelLabel}
-          variant='warning'
-          copyable={false}
-        />
-      )}
-      {!mismatch && props.actualModel && (
-        <Route
-          className='text-muted-foreground size-3 shrink-0'
-          aria-hidden='true'
-        />
-      )}
+      {mappedModel && <ModelMappingIndicator model={mappedModel} />}
     </>
   )
 

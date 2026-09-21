@@ -314,6 +314,36 @@ it('makes the Wan icon available to model icon selectors', () => {
   expect(getLobeIconNames()).toContain('Wan')
 })
 
+it('shows the mapped response model in a hover tooltip without an inline row', async () => {
+  const user = userEvent.setup()
+  const returned =
+    'unexpected-provider-model-with-a-long-dated-version-2026-09-17'
+  render(
+    <ModelBadge
+      modelName='requested-model'
+      responseModel={{
+        requested_model: 'requested-model',
+        upstream_model: 'mapped-model',
+        returned_model: returned,
+        mismatch: true,
+      }}
+    />
+  )
+  expect(
+    screen.queryByText(`Response model: ${returned}`)
+  ).not.toBeInTheDocument()
+  const mappingIndicator = screen.getByRole('img', {
+    name: `Response model: ${returned}`,
+  })
+  expect(mappingIndicator).toBeVisible()
+  expect(mappingIndicator.previousElementSibling).toHaveAttribute(
+    'data-slot',
+    'status-badge'
+  )
+  await user.hover(mappingIndicator)
+  expect(await screen.findByText(`Response model: ${returned}`)).toBeVisible()
+})
+
 it('opens the mismatch evidence with the keyboard and shows all three models', async () => {
   const user = userEvent.setup()
   const returned =
@@ -328,7 +358,6 @@ it('opens the mismatch evidence with the keyboard and shows all three models', a
       }}
     />
   )
-  expect(screen.getByText(`Response model: ${returned}`)).toBeVisible()
   await user.tab()
   expect(
     screen.getByRole('button', {
