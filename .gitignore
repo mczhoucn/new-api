@@ -45,6 +45,23 @@ service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum
 
-# Local test k8s manifests (do not mix with production k8s/).
+# Local k8s manifests stay out of git: myk8s/ is local test config and k8s/
+# holds deployment manifests with plaintext secrets.
 /myk8s/
+/k8s/
+
+# Local agent/tool session state, not project source.
+/.omo/
+/.ccb/
+/.codex/
+/codex.md
+
+# Agent plan and task notes kept out of the tracked docs tree.
+/docs/plans/
+/docs/tasks/
+
+# Stray npm artifacts; the frontend uses bun and the repository root is a Go module.
+/package.json
+/package-lock.json
+/web/package-lock.json
 
